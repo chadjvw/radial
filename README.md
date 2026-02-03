@@ -28,18 +28,18 @@ Currently, the best install path is a build from source. Clone the repository an
 ## Quick Start
 ```bash
 # Initialize in your project
-radial init
+rd init
 
 # Create a goal
-radial goal create "Build a REST API in Go"
+rd goal create "Build a REST API in Go"
 
 # Add tasks with contracts
-radial task create  "Scaffold Go HTTP server" \
+rd task create <goal-id> "Scaffold Go HTTP server" \
   --receives "Empty directory" \
   --produces "go.mod, main.go with http server on :8080 returning 'ok' at /" \
   --verify "curl localhost:8080 returns 'ok'"
 
-radial task create  "Add users endpoint" \
+rd task create <goal-id> "Add users endpoint" \
   --receives "Go HTTP server running on :8080" \
   --produces "GET /users endpoint returning JSON array of hardcoded names" \
   --verify "curl localhost:8080/users returns JSON with names" \
@@ -50,8 +50,8 @@ Then use a prompt such as the following with your agent of choice (Make sure to 
 ```
 You are a senior developer implementing a basic REST API.
 
-Use radial to coordinate. Run radial ready <goal-id> to see available tasks. Pick one, run radial task start <task-id>, do the work, then 
-run radial task complete <task-id> --result '<summary>'. Check radial ready again for more work. Stop when nothing is ready. If a task 
+Use rd to coordinate. Run rd ready <goal-id> to see available tasks. Pick one, run rd task start <task-id>, do the work, then 
+run rd task complete <task-id> --result '<summary>'. Check rd ready again for more work. Stop when nothing is ready. If a task 
 start fails because another agent claimed it, pick a different ready task.
 ```
 
@@ -59,15 +59,15 @@ start fails because another agent claimed it, pick a different ready task.
 
 | Command | Description |
 |---------|-------------|
-| `radial init` | Initialize radial in current directory |
-| `radial goal create <description>` | Create a new goal |
-| `radial goal list` | List all goals |
-| `radial task create <goal-id> <description> [--receives, --produces, --verify, --blocked-by]` | Create a task |
-| `radial task list <goal-id>` | List tasks for a goal |
-| `radial task start <task-id>` | Claim a task (atomic) |
-| `radial task complete <task-id> --result <summary>` | Mark task complete |
-| `radial ready <goal-id>` | List tasks ready to start |
-| `radial status [--goal <id>] [--task <id>]` | Show status |
+| `rd init` | Initialize radial in current directory |
+| `rd goal create <description>` | Create a new goal |
+| `rd goal list` | List all goals |
+| `rd task create <goal-id> <description> [--receives, --produces, --verify, --blocked-by]` | Create a task |
+| `rd task list <goal-id>` | List tasks for a goal |
+| `rd task start <task-id>` | Claim a task (atomic) |
+| `rd task complete <task-id> --result <summary>` | Mark task complete |
+| `rd ready <goal-id>` | List tasks ready to start |
+| `rd status [--goal <id>] [--task <id>]` | Show status |
 
 All commands accept `--json` for machine-readable output.
 
@@ -83,10 +83,10 @@ Contracts are optional at task creation but required before a task can start. Th
 
 ```bash
 # Create task without contract
-radial task create $GOAL "Set up database"
+rd task create $GOAL "Set up database"
 
 # Add contract later
-radial task contract  \
+rd task contract <task-id> \
   --receives "Express app with user routes" \
   --produces "PostgreSQL schema, db.js connection pool, migrated tables" \
   --verify "psql -c 'SELECT * FROM users' succeeds"
@@ -94,12 +94,13 @@ radial task contract  \
 
 ## Project structure
 
-Radial stores state in `.radial/radial.db` (SQLite). It walks up parent directories to find this, so commands work from subdirectories.
+Radial stores state in `.radial/` as JSONL files (one JSON object per line). This format is human-readable and git-friendly. It walks up parent directories to find this, so commands work from subdirectories.
 
 ```
 your-project/
 ├── .radial/
-│   └── radial.db
+│   ├── goals.jsonl
+│   └── tasks.jsonl
 ├── src/
 └── ...
 ```
@@ -109,7 +110,7 @@ your-project/
 Don't want to commit `.radial/`? Use stealth mode:
 
 ```bash
-radial init --stealth
+rd init --stealth
 ```
 
 This adds `.radial/` to `.git/info/exclude` (local gitignore).

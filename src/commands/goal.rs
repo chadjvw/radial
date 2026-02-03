@@ -5,7 +5,7 @@ use crate::db::Database;
 use crate::id::generate_id;
 use crate::models::{Goal, GoalState, Metrics};
 
-pub fn create(description: String, json: bool, db: &Database) -> Result<()> {
+pub fn create(description: String, json: bool, db: &mut Database) -> Result<()> {
     let goal = Goal {
         id: generate_id(),
         parent_id: None,
