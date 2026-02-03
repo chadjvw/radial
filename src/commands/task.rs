@@ -14,7 +14,7 @@ pub fn create(
     verify: Option<String>,
     blocked_by: Option<Vec<String>>,
     json: bool,
-    db: &Database,
+    db: &mut Database,
 ) -> Result<()> {
     let goal = db.get_goal(&goal_id)?;
 
@@ -157,7 +157,7 @@ pub fn list(goal_id: String, json: bool, db: &Database) -> Result<()> {
     Ok(())
 }
 
-pub fn start(task_id: String, db: &Database) -> Result<()> {
+pub fn start(task_id: String, db: &mut Database) -> Result<()> {
     let task = db.get_task(&task_id)?;
 
     if task.is_none() {
@@ -230,7 +230,7 @@ pub fn complete(
     artifacts: Option<Vec<String>>,
     tokens: Option<i64>,
     elapsed: Option<i64>,
-    db: &Database,
+    db: &mut Database,
 ) -> Result<()> {
     let task = db.get_task(&task_id)?;
 
@@ -349,7 +349,7 @@ pub fn complete(
     Ok(())
 }
 
-pub fn fail(task_id: String, db: &Database) -> Result<()> {
+pub fn fail(task_id: String, db: &mut Database) -> Result<()> {
     let task = db.get_task(&task_id)?;
 
     if task.is_none() {
@@ -399,7 +399,7 @@ pub fn fail(task_id: String, db: &Database) -> Result<()> {
     Ok(())
 }
 
-pub fn retry(task_id: String, db: &Database) -> Result<()> {
+pub fn retry(task_id: String, db: &mut Database) -> Result<()> {
     let task = db.get_task(&task_id)?;
 
     if task.is_none() {

@@ -3,8 +3,8 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::Path;
 
+use crate::RADIAL_DIR;
 use crate::db::Database;
-use crate::{DB_FILE, RADIAL_DIR};
 
 pub fn run(stealth: bool) -> Result<()> {
     let radial_dir = std::path::PathBuf::from(RADIAL_DIR);
@@ -16,8 +16,7 @@ pub fn run(stealth: bool) -> Result<()> {
 
     fs::create_dir_all(&radial_dir).context("Failed to create .radial directory")?;
 
-    let db_path = radial_dir.join(DB_FILE);
-    let db = Database::open(&db_path)?;
+    let db = Database::open(&radial_dir)?;
     db.init_schema()?;
 
     if stealth {
