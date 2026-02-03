@@ -46,7 +46,7 @@ radial task create  "Add users endpoint" \
   --blocked-by <previous-task-id>
 ```
 
-Then utilize a prompt such as the following with your agent of choice (Make sure to replace <goal-id> with the actual ID):
+Then use a prompt such as the following with your agent of choice (Make sure to replace <goal-id> with the actual ID):
 ```
 You are a senior developer implementing a basic REST API.
 
