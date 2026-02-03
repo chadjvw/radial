@@ -19,7 +19,7 @@ impl TestEnv {
         let mut binary_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         binary_path.push("target");
         binary_path.push("debug");
-        binary_path.push("radial");
+        binary_path.push("rd");
 
         Self {
             _temp_dir: temp_dir,
@@ -48,9 +48,9 @@ impl TestEnv {
         self.work_dir.join(".radial").exists()
     }
 
-    /// Check if database file exists
+    /// Check if database files exist
     fn db_exists(&self) -> bool {
-        self.work_dir.join(".radial").join("radial.db").exists()
+        self.work_dir.join(".radial").join("goals.jsonl").exists()
     }
 }
 
