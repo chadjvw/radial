@@ -3,9 +3,9 @@ use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
-use chrono::{DateTime, Utc};
+use anyhow::{bail, Context, Result};
 use fs2::FileExt;
+use jiff::Timestamp;
 
 use crate::models::{Goal, Metrics, Outcome, Task, TaskState};
 
@@ -260,9 +260,8 @@ impl Database {
         to_state: &TaskState,
         updated_at: &str,
     ) -> Result<bool> {
-        let task = match self.tasks.get_mut(task_id) {
-            Some(t) => t,
-            None => return Ok(false),
+        let Some(task) = self.tasks.get_mut(task_id) else {
+            return Ok(false);
         };
 
         if task.state != *from_state {
@@ -270,9 +269,7 @@ impl Database {
         }
 
         task.state = to_state.clone();
-        task.updated_at = DateTime::parse_from_rfc3339(updated_at)
-            .map(|dt| dt.with_timezone(&Utc))
-            .unwrap_or_else(|_| Utc::now());
+        task.updated_at = updated_at.parse().unwrap_or_else(|_| Timestamp::now());
 
         self.persist_tasks()?;
 
@@ -288,9 +285,8 @@ impl Database {
         to_state: &TaskState,
         updated_at: &str,
     ) -> Result<bool> {
-        let task = match self.tasks.get_mut(task_id) {
-            Some(t) => t,
-            None => return Ok(false),
+        let Some(task) = self.tasks.get_mut(task_id) else {
+            return Ok(false);
         };
 
         if !from_states.iter().any(|s| task.state == **s) {
@@ -298,16 +294,14 @@ impl Database {
         }
 
         task.state = to_state.clone();
-        task.updated_at = DateTime::parse_from_rfc3339(updated_at)
-            .map(|dt| dt.with_timezone(&Utc))
-            .unwrap_or_else(|_| Utc::now());
+        task.updated_at = updated_at.parse().unwrap_or_else(|_| Timestamp::now());
 
         self.persist_tasks()?;
         Ok(true)
     }
 
-    /// Atomically complete a task: transition from InProgress to Completed with result and metrics.
-    /// Returns Ok(true) if the transition succeeded, Ok(false) if the task was not in InProgress state.
+    /// Atomically complete a task: transition from `InProgress` to `Completed` with result and metrics.
+    /// Returns `Ok(true)` if the transition succeeded, `Ok(false)` if the task was not in `InProgress` state.
     #[allow(clippy::too_many_arguments)]
     pub fn complete_task(
         &mut self,
@@ -319,9 +313,8 @@ impl Database {
         updated_at: &str,
         completed_at: &str,
     ) -> Result<bool> {
-        let task = match self.tasks.get_mut(task_id) {
-            Some(t) => t,
-            None => return Ok(false),
+        let Some(task) = self.tasks.get_mut(task_id) else {
+            return Ok(false);
         };
 
         if task.state != TaskState::InProgress {
@@ -337,26 +330,19 @@ impl Database {
         });
         task.metrics.tokens = tokens;
         task.metrics.elapsed_ms = elapsed_ms;
-        task.updated_at = DateTime::parse_from_rfc3339(updated_at)
-            .map(|dt| dt.with_timezone(&Utc))
-            .unwrap_or_else(|_| Utc::now());
-        task.completed_at = Some(
-            DateTime::parse_from_rfc3339(completed_at)
-                .map(|dt| dt.with_timezone(&Utc))
-                .unwrap_or_else(|_| Utc::now()),
-        );
+        task.updated_at = updated_at.parse().unwrap_or_else(|_| Timestamp::now());
+        task.completed_at = Some(completed_at.parse().unwrap_or_else(|_| Timestamp::now()));
 
         self.persist_tasks()?;
 
         Ok(true)
     }
 
-    /// Atomically retry a failed task: transition from Failed to InProgress and increment retry_count.
-    /// Returns Ok(true) if the transition succeeded, Ok(false) if the task was not in Failed state.
+    /// Atomically retry a failed task: transition from `Failed` to `InProgress` and increment `retry_count`.
+    /// Returns `Ok(true)` if the transition succeeded, `Ok(false)` if the task was not in `Failed` state.
     pub fn retry_task(&mut self, task_id: &str, updated_at: &str) -> Result<bool> {
-        let task = match self.tasks.get_mut(task_id) {
-            Some(t) => t,
-            None => return Ok(false),
+        let Some(task) = self.tasks.get_mut(task_id) else {
+            return Ok(false);
         };
 
         if task.state != TaskState::Failed {
@@ -365,9 +351,7 @@ impl Database {
 
         task.state = TaskState::InProgress;
         task.metrics.retry_count += 1;
-        task.updated_at = DateTime::parse_from_rfc3339(updated_at)
-            .map(|dt| dt.with_timezone(&Utc))
-            .unwrap_or_else(|_| Utc::now());
+        task.updated_at = updated_at.parse().unwrap_or_else(|_| Timestamp::now());
 
         self.persist_tasks()?;
 

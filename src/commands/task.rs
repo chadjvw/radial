@@ -1,11 +1,19 @@
-use anyhow::{Result, anyhow};
-use chrono::Utc;
+use anyhow::{anyhow, Result};
+use jiff::Timestamp;
 
 use crate::db::Database;
 use crate::helpers::find_similar_id;
 use crate::id::generate_id;
 use crate::models::{Contract, GoalState, Task, TaskMetrics, TaskState};
 
+/// Result of completing a task, including any unblocked tasks.
+#[derive(Debug)]
+pub struct CompleteResult {
+    pub task: Task,
+    pub unblocked_task_ids: Vec<String>,
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn create(
     goal_id: String,
     description: String,
@@ -13,9 +21,8 @@ pub fn create(
     produces: Option<String>,
     verify: Option<String>,
     blocked_by: Option<Vec<String>>,
-    json: bool,
     db: &mut Database,
-) -> Result<()> {
+) -> Result<Task> {
     let goal = db.get_goal(&goal_id)?;
 
     if goal.is_none() {
@@ -24,12 +31,10 @@ pub fn create(
 
         return if let Some(suggestion) = find_similar_id(&goal_id, &goal_ids) {
             Err(anyhow!(
-                "Goal not found: {}\nDid you mean: {}",
-                goal_id,
-                suggestion
+                "Goal not found: {goal_id}\nDid you mean: {suggestion}"
             ))
         } else {
-            Err(anyhow!("Goal not found: {}", goal_id))
+            Err(anyhow!("Goal not found: {goal_id}"))
         };
     }
 
@@ -44,14 +49,11 @@ pub fn create(
             if !existing_task_ids.contains(task_id) {
                 return if let Some(suggestion) = find_similar_id(task_id, &existing_task_ids) {
                     Err(anyhow!(
-                        "Task not found in blocked-by list: {}\nDid you mean: {}",
-                        task_id,
-                        suggestion
+                        "Task not found in blocked-by list: {task_id}\nDid you mean: {suggestion}"
                     ))
                 } else {
                     Err(anyhow!(
-                        "Task not found in blocked-by list: {}\nTask must exist in the same goal.",
-                        task_id
+                        "Task not found in blocked-by list: {task_id}\nTask must exist in the same goal."
                     ))
                 };
             }
@@ -69,6 +71,7 @@ pub fn create(
         None
     };
 
+    let now = Timestamp::now();
     let task = Task {
         id: generate_id(),
         goal_id: goal.id.clone(),
@@ -81,8 +84,8 @@ pub fn create(
         },
         blocked_by,
         result: None,
-        created_at: Utc::now(),
-        updated_at: Utc::now(),
+        created_at: now,
+        updated_at: now,
         completed_at: None,
         metrics: TaskMetrics::default(),
     };
@@ -90,93 +93,45 @@ pub fn create(
     db.create_task(&task)?;
 
     let mut updated_goal = goal;
-    updated_goal.updated_at = Utc::now();
+    updated_goal.updated_at = Timestamp::now();
     if updated_goal.state == GoalState::Pending {
         updated_goal.state = GoalState::InProgress;
     }
     db.update_goal(&updated_goal)?;
 
-    if json {
-        println!("{}", serde_json::to_string_pretty(&task)?);
-    } else {
-        println!("Created task: {}", task.id);
-        println!("  Description: {}", task.description);
-        println!("  State: {}", task.state.as_str());
-        if task.contract.is_none() {
-            println!("  Contract: (not set - required before starting)");
-        }
-    }
-    Ok(())
+    Ok(task)
 }
 
-pub fn list(goal_id: String, json: bool, db: &Database) -> Result<()> {
-    let goal = db
+pub fn list(goal_id: String, db: &Database) -> Result<Vec<Task>> {
+    let _goal = db
         .get_goal(&goal_id)?
-        .ok_or_else(|| anyhow!("Goal not found: {}", goal_id))?;
+        .ok_or_else(|| anyhow!("Goal not found: {goal_id}"))?;
 
-    let tasks = db.list_tasks(&goal_id)?;
-
-    if json {
-        let output = serde_json::to_string_pretty(&tasks)?;
-        println!("{output}");
-        return Ok(());
-    }
-
-    println!("Tasks for goal: {} [{}]", goal.id, goal.state.as_str());
-    println!("  {}", goal.description);
-    println!();
-
-    if tasks.is_empty() {
-        println!("No tasks found.");
-        return Ok(());
-    }
-
-    for task in tasks {
-        println!("{} [{}]", task.id, task.state.as_str());
-        println!("  Description: {}", task.description);
-        if let Some(ref contract) = task.contract {
-            println!("  Contract:");
-            println!("    Receives: {}", contract.receives);
-            println!("    Produces: {}", contract.produces);
-            println!("    Verify: {}", contract.verify);
-        } else {
-            println!("  Contract: (not set)");
-        }
-        if let Some(blocked_by) = &task.blocked_by {
-            println!("  Blocked by: {}", blocked_by.join(", "));
-        }
-        if let Some(result) = &task.result {
-            println!("  Result: {}", result.summary);
-            if !result.artifacts.is_empty() {
-                println!("  Artifacts: {}", result.artifacts.join(", "));
-            }
-        }
-        println!();
-    }
-
-    Ok(())
+    db.list_tasks(&goal_id)
 }
 
-pub fn start(task_id: String, db: &mut Database) -> Result<()> {
+pub fn start(task_id: String, db: &mut Database) -> Result<Task> {
     let task = db.get_task(&task_id)?;
 
     if task.is_none() {
         // Get all tasks across all goals for suggestions
-        let all_goals = db.list_goals()?;
-        let mut all_task_ids = Vec::new();
-        for goal in all_goals {
-            let tasks = db.list_tasks(&goal.id)?;
-            all_task_ids.extend(tasks.iter().map(|t| t.id.clone()));
-        }
+        let all_task_ids: Vec<String> = db
+            .list_goals()?
+            .iter()
+            .flat_map(|goal| {
+                db.list_tasks(&goal.id)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|t| t.id)
+            })
+            .collect();
 
         return if let Some(suggestion) = find_similar_id(&task_id, &all_task_ids) {
             Err(anyhow!(
-                "Task not found: {}\nDid you mean: {}",
-                task_id,
-                suggestion
+                "Task not found: {task_id}\nDid you mean: {suggestion}"
             ))
         } else {
-            Err(anyhow!("Task not found: {}", task_id))
+            Err(anyhow!("Task not found: {task_id}"))
         };
     }
 
@@ -201,11 +156,11 @@ pub fn start(task_id: String, db: &mut Database) -> Result<()> {
     if task.state != TaskState::Pending {
         return Err(anyhow!(
             "Task must be in 'pending' state to start. Current state: {}",
-            task.state.as_str()
+            task.state.as_ref()
         ));
     }
 
-    let updated_at = Utc::now().to_rfc3339();
+    let updated_at = Timestamp::now().to_string();
     let transitioned = db.transition_task_state(
         &task.id,
         &TaskState::Pending,
@@ -219,9 +174,9 @@ pub fn start(task_id: String, db: &mut Database) -> Result<()> {
         ));
     }
 
-    println!("Started task: {}", task.id);
-    println!("  Description: {}", task.description);
-    Ok(())
+    // Re-fetch to get the updated state
+    db.get_task(&task_id)?
+        .ok_or_else(|| anyhow!("Task not found after transition"))
 }
 
 pub fn complete(
@@ -231,26 +186,28 @@ pub fn complete(
     tokens: Option<i64>,
     elapsed: Option<i64>,
     db: &mut Database,
-) -> Result<()> {
+) -> Result<CompleteResult> {
     let task = db.get_task(&task_id)?;
 
     if task.is_none() {
         // Get all tasks across all goals for suggestions
-        let all_goals = db.list_goals()?;
-        let mut all_task_ids = Vec::new();
-        for goal in all_goals {
-            let tasks = db.list_tasks(&goal.id)?;
-            all_task_ids.extend(tasks.iter().map(|t| t.id.clone()));
-        }
+        let all_task_ids: Vec<String> = db
+            .list_goals()?
+            .iter()
+            .flat_map(|goal| {
+                db.list_tasks(&goal.id)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|t| t.id)
+            })
+            .collect();
 
         return if let Some(suggestion) = find_similar_id(&task_id, &all_task_ids) {
             Err(anyhow!(
-                "Task not found: {}\nDid you mean: {}",
-                task_id,
-                suggestion
+                "Task not found: {task_id}\nDid you mean: {suggestion}"
             ))
         } else {
-            Err(anyhow!("Task not found: {}", task_id))
+            Err(anyhow!("Task not found: {task_id}"))
         };
     }
 
@@ -259,13 +216,13 @@ pub fn complete(
     if task.state != TaskState::InProgress {
         return Err(anyhow!(
             "Task must be in 'in_progress' state to complete. Current state: {}",
-            task.state.as_str()
+            task.state.as_ref()
         ));
     }
 
-    let now = Utc::now();
-    let updated_at = now.to_rfc3339();
-    let completed_at = now.to_rfc3339();
+    let now = Timestamp::now();
+    let updated_at = now.to_string();
+    let completed_at = now.to_string();
     let artifacts_list = artifacts.unwrap_or_default();
     let artifacts_json = serde_json::to_string(&artifacts_list)?;
 
@@ -292,13 +249,13 @@ pub fn complete(
         .get_goal(&task.goal_id)?
         .ok_or_else(|| anyhow!("Goal not found: {}", task.goal_id))?;
 
-    goal.updated_at = Utc::now();
+    goal.updated_at = Timestamp::now();
 
     let all_tasks = db.list_tasks(&goal.id)?;
 
     // Unblock tasks that were waiting on this task
     let completed_task_id = task.id.clone();
-    let mut unblocked_tasks = Vec::new();
+    let mut unblocked_task_ids = Vec::new();
 
     for mut dependent_task in all_tasks.iter().cloned() {
         if dependent_task.state == TaskState::Blocked {
@@ -313,9 +270,9 @@ pub fn complete(
 
                     if all_blockers_done {
                         dependent_task.state = TaskState::Pending;
-                        dependent_task.updated_at = Utc::now();
+                        dependent_task.updated_at = Timestamp::now();
                         db.update_task(&dependent_task)?;
-                        unblocked_tasks.push(dependent_task.id.clone());
+                        unblocked_task_ids.push(dependent_task.id.clone());
                     }
                 }
             }
@@ -329,45 +286,40 @@ pub fn complete(
 
     if all_completed {
         goal.state = GoalState::Completed;
-        goal.completed_at = Some(Utc::now());
+        goal.completed_at = Some(Timestamp::now());
     } else if any_failed {
         goal.state = GoalState::Failed;
     }
 
     db.update_goal(&goal)?;
 
-    println!("Completed task: {}", task.id);
-    println!("  Result: {}", task.result.as_ref().unwrap().summary);
-
-    if !unblocked_tasks.is_empty() {
-        println!("\nUnblocked tasks:");
-        for unblocked_id in unblocked_tasks {
-            println!("  - {}", unblocked_id);
-        }
-    }
-
-    Ok(())
+    Ok(CompleteResult {
+        task,
+        unblocked_task_ids,
+    })
 }
 
-pub fn fail(task_id: String, db: &mut Database) -> Result<()> {
+pub fn fail(task_id: String, db: &mut Database) -> Result<Task> {
     let task = db.get_task(&task_id)?;
 
     if task.is_none() {
-        let all_goals = db.list_goals()?;
-        let mut all_task_ids = Vec::new();
-        for goal in all_goals {
-            let tasks = db.list_tasks(&goal.id)?;
-            all_task_ids.extend(tasks.iter().map(|t| t.id.clone()));
-        }
+        let all_task_ids: Vec<String> = db
+            .list_goals()?
+            .iter()
+            .flat_map(|goal| {
+                db.list_tasks(&goal.id)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|t| t.id)
+            })
+            .collect();
 
         return if let Some(suggestion) = find_similar_id(&task_id, &all_task_ids) {
             Err(anyhow!(
-                "Task not found: {}\nDid you mean: {}",
-                task_id,
-                suggestion
+                "Task not found: {task_id}\nDid you mean: {suggestion}"
             ))
         } else {
-            Err(anyhow!("Task not found: {}", task_id))
+            Err(anyhow!("Task not found: {task_id}"))
         };
     }
 
@@ -376,11 +328,11 @@ pub fn fail(task_id: String, db: &mut Database) -> Result<()> {
     if task.state != TaskState::InProgress && task.state != TaskState::Verifying {
         return Err(anyhow!(
             "Task must be in 'in_progress' or 'verifying' state to fail. Current state: {}",
-            task.state.as_str()
+            task.state.as_ref()
         ));
     }
 
-    let updated_at = Utc::now().to_rfc3339();
+    let updated_at = Timestamp::now().to_string();
     let transitioned = db.transition_task_state_from_any(
         &task.id,
         &[&TaskState::InProgress, &TaskState::Verifying],
@@ -394,30 +346,32 @@ pub fn fail(task_id: String, db: &mut Database) -> Result<()> {
         ));
     }
 
-    println!("Failed task: {}", task.id);
-    println!("  Description: {}", task.description);
-    Ok(())
+    // Re-fetch to get the updated state
+    db.get_task(&task_id)?
+        .ok_or_else(|| anyhow!("Task not found after transition"))
 }
 
-pub fn retry(task_id: String, db: &mut Database) -> Result<()> {
+pub fn retry(task_id: String, db: &mut Database) -> Result<Task> {
     let task = db.get_task(&task_id)?;
 
     if task.is_none() {
-        let all_goals = db.list_goals()?;
-        let mut all_task_ids = Vec::new();
-        for goal in all_goals {
-            let tasks = db.list_tasks(&goal.id)?;
-            all_task_ids.extend(tasks.iter().map(|t| t.id.clone()));
-        }
+        let all_task_ids: Vec<String> = db
+            .list_goals()?
+            .iter()
+            .flat_map(|goal| {
+                db.list_tasks(&goal.id)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|t| t.id)
+            })
+            .collect();
 
         return if let Some(suggestion) = find_similar_id(&task_id, &all_task_ids) {
             Err(anyhow!(
-                "Task not found: {}\nDid you mean: {}",
-                task_id,
-                suggestion
+                "Task not found: {task_id}\nDid you mean: {suggestion}"
             ))
         } else {
-            Err(anyhow!("Task not found: {}", task_id))
+            Err(anyhow!("Task not found: {task_id}"))
         };
     }
 
@@ -426,11 +380,11 @@ pub fn retry(task_id: String, db: &mut Database) -> Result<()> {
     if task.state != TaskState::Failed {
         return Err(anyhow!(
             "Task must be in 'failed' state to retry. Current state: {}",
-            task.state.as_str()
+            task.state.as_ref()
         ));
     }
 
-    let updated_at = Utc::now().to_rfc3339();
+    let updated_at = Timestamp::now().to_string();
     let transitioned = db.retry_task(&task.id, &updated_at)?;
 
     if !transitioned {
@@ -438,10 +392,6 @@ pub fn retry(task_id: String, db: &mut Database) -> Result<()> {
     }
 
     // Re-fetch to get updated retry_count
-    let task = db.get_task(&task_id)?.unwrap();
-
-    println!("Retrying task: {}", task.id);
-    println!("  Description: {}", task.description);
-    println!("  Retry count: {}", task.metrics.retry_count);
-    Ok(())
+    db.get_task(&task_id)?
+        .ok_or_else(|| anyhow!("Task not found after retry"))
 }
