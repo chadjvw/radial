@@ -1,15 +1,21 @@
+#![allow(clippy::missing_errors_doc)]
+#![allow(clippy::missing_panics_doc)]
+#![allow(clippy::must_use_candidate)]
+
 pub mod cli;
 pub mod commands;
 pub mod db;
 pub mod helpers;
 pub mod id;
 pub mod models;
+pub mod output;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use std::path::PathBuf;
 
 use cli::{Cli, Commands, GoalCommands, TaskCommands};
 use db::Database;
+use output::Output;
 
 pub const RADIAL_DIR: &str = ".radial";
 pub const GOALS_FILE: &str = "goals.jsonl";
@@ -83,9 +89,13 @@ pub fn run(cli: Cli) -> Result<()> {
             let mut db = ensure_initialized()?;
             match goal_cmd {
                 GoalCommands::Create { description, json } => {
-                    commands::goal::create(description, json, &mut db)
+                    let goal = commands::goal::create(description, &mut db)?;
+                    Output::new(json).goal_created(&goal)
                 }
-                GoalCommands::List { json } => commands::goal::list(json, &db),
+                GoalCommands::List { json } => {
+                    let goals = commands::goal::list(&db)?;
+                    Output::new(json).goal_list(&goals)
+                }
             }
         }
         Commands::Task(task_cmd) => {
@@ -99,36 +109,63 @@ pub fn run(cli: Cli) -> Result<()> {
                     verify,
                     blocked_by,
                     json,
-                } => commands::task::create(
-                    goal_id,
-                    description,
-                    receives,
-                    produces,
-                    verify,
-                    blocked_by,
-                    json,
-                    &mut db,
-                ),
-                TaskCommands::List { goal_id, json } => commands::task::list(goal_id, json, &db),
-                TaskCommands::Start { task_id } => commands::task::start(task_id, &mut db),
+                } => {
+                    let task = commands::task::create(
+                        goal_id,
+                        description,
+                        receives,
+                        produces,
+                        verify,
+                        blocked_by,
+                        &mut db,
+                    )?;
+                    Output::new(json).task_created(&task)
+                }
+                TaskCommands::List { goal_id, json } => {
+                    let tasks = commands::task::list(goal_id.clone(), &db)?;
+                    let goal = db
+                        .get_goal(&goal_id)?
+                        .ok_or_else(|| anyhow!("Goal not found: {goal_id}"))?;
+                    Output::new(json).task_list(&tasks, &goal)
+                }
+                TaskCommands::Start { task_id } => {
+                    let task = commands::task::start(task_id, &mut db)?;
+                    Output::new(false).task_started(&task)
+                }
                 TaskCommands::Complete {
                     task_id,
                     result,
                     artifacts,
                     tokens,
                     elapsed,
-                } => commands::task::complete(task_id, result, artifacts, tokens, elapsed, &mut db),
-                TaskCommands::Fail { task_id } => commands::task::fail(task_id, &mut db),
-                TaskCommands::Retry { task_id } => commands::task::retry(task_id, &mut db),
+                } => {
+                    let complete_result = commands::task::complete(
+                        task_id, result, artifacts, tokens, elapsed, &mut db,
+                    )?;
+                    Output::new(false).task_completed(&complete_result)
+                }
+                TaskCommands::Fail { task_id } => {
+                    let task = commands::task::fail(task_id, &mut db)?;
+                    Output::new(false).task_failed(&task)
+                }
+                TaskCommands::Retry { task_id } => {
+                    let task = commands::task::retry(task_id, &mut db)?;
+                    Output::new(false).task_retry(&task)
+                }
             }
         }
         Commands::Status { goal, task, json } => {
             let db = ensure_initialized()?;
-            commands::status::run(goal, task, json, &db)
+            let result = commands::status::run(goal, task, &db)?;
+            Output::new(json).status(&result)
         }
         Commands::Ready { goal_id, json } => {
             let db = ensure_initialized()?;
-            commands::ready::run(goal_id, json, &db)
+            let tasks = commands::ready::run(goal_id.clone(), &db)?;
+            let goal = db
+                .get_goal(&goal_id)?
+                .ok_or_else(|| anyhow!("Goal not found: {goal_id}"))?;
+            Output::new(json).ready_tasks(&tasks, &goal)
         }
     }
 }
