@@ -10,7 +10,7 @@ pub mod id;
 pub mod models;
 pub mod output;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use std::path::PathBuf;
 
 use cli::{Cli, Commands, GoalCommands, TaskCommands};

@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use jiff::Timestamp;
 
 use crate::db::Database;
@@ -17,7 +17,7 @@ fn task_not_found_err(task_id: &str, db: &Database) -> anyhow::Error {
     let all_task_ids: Vec<&str> = db
         .list_goals()
         .iter()
-        .flat_map(|goal| db.list_tasks(&goal.id).into_iter().map(|t| t.id.as_str()))
+        .flat_map(|goal| db.list_tasks(goal.id()).into_iter().map(Task::id))
         .collect();
 
     if let Some(suggestion) = find_similar_id(task_id, &all_task_ids) {
@@ -41,7 +41,7 @@ pub fn create(
 
     if goal.is_none() {
         let all_goals = db.list_goals();
-        let goal_ids: Vec<&str> = all_goals.iter().map(|g| g.id.as_str()).collect();
+        let goal_ids: Vec<&str> = all_goals.iter().map(|g| g.id()).collect();
 
         return if let Some(suggestion) = find_similar_id(goal_id, &goal_ids) {
             Err(anyhow!(
@@ -53,13 +53,13 @@ pub fn create(
     }
 
     let goal = goal.unwrap();
-    let goal_id_owned = goal.id.clone();
-    let goal_state = goal.state;
+    let goal_id_owned = goal.id().to_owned();
+    let goal_state = goal.state();
 
     // Validate blocked_by task IDs exist
     if let Some(ref task_ids) = blocked_by {
         let all_tasks = db.list_tasks(&goal_id_owned);
-        let existing_task_ids: Vec<&str> = all_tasks.iter().map(|t| t.id.as_str()).collect();
+        let existing_task_ids: Vec<&str> = all_tasks.iter().map(|t| t.id()).collect();
 
         for task_id in task_ids {
             if !existing_task_ids.contains(&task_id.as_str()) {
@@ -78,44 +78,42 @@ pub fn create(
 
     // Build contract if any contract fields are provided
     let contract = if receives.is_some() || produces.is_some() || verify.is_some() {
-        Some(Contract {
-            receives: receives.unwrap_or_default(),
-            produces: produces.unwrap_or_default(),
-            verify: verify.unwrap_or_default(),
-        })
+        Some(Contract::new(
+            receives.unwrap_or_default(),
+            produces.unwrap_or_default(),
+            verify.unwrap_or_default(),
+        ))
     } else {
         None
     };
 
     let blocked_by_ids = blocked_by.unwrap_or_default();
+    let state = if blocked_by_ids.is_empty() {
+        TaskState::Pending
+    } else {
+        TaskState::Blocked
+    };
     let now = Timestamp::now();
-    let task = Task {
-        id: generate_id(),
-        goal_id: goal_id_owned.clone(),
+    let task = Task::new(
+        generate_id(),
+        goal_id_owned.clone(),
         description,
         contract,
-        state: if blocked_by_ids.is_empty() {
-            TaskState::Pending
-        } else {
-            TaskState::Blocked
-        },
-        blocked_by: blocked_by_ids,
-        result: None,
-        created_at: now,
-        updated_at: now,
-        completed_at: None,
-        metrics: TaskMetrics::default(),
-        comments: Vec::new(),
-    };
+        state,
+        blocked_by_ids,
+        now,
+        now,
+    );
 
     db.create_task(task.clone())?;
 
     // Update the goal
     let base = db.base_path().to_owned();
     let goal = db.get_goal_mut(&goal_id_owned).unwrap();
-    goal.updated_at = Timestamp::now();
     if goal_state == GoalState::Pending {
-        goal.state = GoalState::InProgress;
+        goal.mark_in_progress();
+    } else {
+        goal.touch();
     }
     goal.write_file(&base)?;
 
@@ -138,24 +136,24 @@ pub fn start(task_id: &str, db: &mut Database) -> Result<Task> {
 
     let task = task.unwrap();
 
-    if task.contract.is_none() {
+    if task.contract().is_none() {
         return Err(anyhow!(
             "Task has no contract. Set a contract before starting.\nUse: radial task contract {} --receives \"...\" --produces \"...\" --verify \"...\"",
-            task.id
+            task.id()
         ));
     }
 
-    if task.state == TaskState::Blocked && !task.blocked_by.is_empty() {
+    if task.state() == TaskState::Blocked && !task.blocked_by().is_empty() {
         return Err(anyhow!(
             "Task is blocked by: {}\nComplete those tasks first, or use --force to override.",
-            task.blocked_by.join(", ")
+            task.blocked_by().join(", ")
         ));
     }
 
-    if task.state != TaskState::Pending {
+    if task.state() != TaskState::Pending {
         return Err(anyhow!(
             "Task must be in 'pending' state to start. Current state: {}",
-            task.state.as_ref()
+            task.state().as_ref()
         ));
     }
 
@@ -187,26 +185,19 @@ pub fn complete(
 
     let task = task.unwrap();
 
-    if task.state != TaskState::InProgress {
+    if task.state() != TaskState::InProgress {
         return Err(anyhow!(
             "Task must be in 'in_progress' state to complete. Current state: {}",
-            task.state.as_ref()
+            task.state().as_ref()
         ));
     }
 
-    let goal_id = task.goal_id.clone();
-    let retry_count = task.metrics.retry_count;
+    let goal_id = task.goal_id().to_owned();
+    let retry_count = task.metrics().retry_count();
     let artifacts_list = artifacts.unwrap_or_default();
 
-    let outcome = Outcome {
-        summary: result_summary,
-        artifacts: artifacts_list,
-    };
-    let metrics = TaskMetrics {
-        tokens: tokens.unwrap_or(0),
-        elapsed_ms: elapsed.unwrap_or(0),
-        retry_count,
-    };
+    let outcome = Outcome::new(result_summary, artifacts_list);
+    let metrics = TaskMetrics::new(tokens.unwrap_or(0), elapsed.unwrap_or(0), retry_count);
 
     let base = db.base_path().to_owned();
     let task = db.get_task_mut(task_id).unwrap();
@@ -222,8 +213,8 @@ pub fn complete(
     let tasks_snapshot: Vec<(String, TaskState, Vec<String>)> = db
         .list_tasks(&goal_id)
         .iter()
-        .filter(|t| t.state == TaskState::Blocked)
-        .map(|t| (t.id.clone(), t.state, t.blocked_by.clone()))
+        .filter(|t| t.state() == TaskState::Blocked)
+        .map(|t| (t.id().to_owned(), t.state(), t.blocked_by().to_vec()))
         .collect();
 
     let mut unblocked_task_ids = Vec::new();
@@ -232,7 +223,7 @@ pub fn complete(
         if dep_blocked_by.contains(&task_id.to_owned()) {
             let all_blockers_done = dep_blocked_by.iter().all(|blocker_id| {
                 db.get_task(blocker_id)
-                    .is_some_and(|t| t.state == TaskState::Completed)
+                    .is_some_and(|t| t.state() == TaskState::Completed)
             });
 
             if all_blockers_done {
@@ -246,19 +237,19 @@ pub fn complete(
 
     // Check goal completion
     let all_tasks = db.list_tasks(&goal_id);
-    let all_completed = all_tasks.iter().all(|t| t.state == TaskState::Completed);
-    let any_failed = all_tasks.iter().any(|t| t.state == TaskState::Failed);
+    let all_completed = all_tasks.iter().all(|t| t.state() == TaskState::Completed);
+    let any_failed = all_tasks.iter().any(|t| t.state() == TaskState::Failed);
 
     let goal = db
         .get_goal_mut(&goal_id)
         .ok_or_else(|| anyhow!("Goal not found: {goal_id}"))?;
 
-    goal.updated_at = Timestamp::now();
     if all_completed {
-        goal.state = GoalState::Completed;
-        goal.completed_at = Some(Timestamp::now());
+        goal.mark_completed();
     } else if any_failed {
-        goal.state = GoalState::Failed;
+        goal.mark_failed();
+    } else {
+        goal.touch();
     }
     goal.write_file(&base)?;
 
@@ -277,10 +268,10 @@ pub fn fail(task_id: &str, db: &mut Database) -> Result<Task> {
 
     let task = task.unwrap();
 
-    if task.state != TaskState::InProgress && task.state != TaskState::Verifying {
+    if task.state() != TaskState::InProgress && task.state() != TaskState::Verifying {
         return Err(anyhow!(
             "Task must be in 'in_progress' or 'verifying' state to fail. Current state: {}",
-            task.state.as_ref()
+            task.state().as_ref()
         ));
     }
 
@@ -308,10 +299,10 @@ pub fn retry(task_id: &str, db: &mut Database) -> Result<Task> {
 
     let task = task.unwrap();
 
-    if task.state != TaskState::Failed {
+    if task.state() != TaskState::Failed {
         return Err(anyhow!(
             "Task must be in 'failed' state to retry. Current state: {}",
-            task.state.as_ref()
+            task.state().as_ref()
         ));
     }
 
@@ -330,11 +321,7 @@ pub fn comment(task_id: &str, text: String, db: &mut Database) -> Result<Task> {
         return Err(task_not_found_err(task_id, db));
     }
 
-    let comment = Comment {
-        id: generate_id(),
-        text,
-        created_at: Timestamp::now(),
-    };
+    let comment = Comment::new(generate_id(), text, Timestamp::now());
 
     let base = db.base_path().to_owned();
     let task = db.get_task_mut(task_id).unwrap();

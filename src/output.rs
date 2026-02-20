@@ -1,7 +1,7 @@
 use std::io::{self, Write};
 
 use anyhow::Result;
-use console::{style, Term};
+use console::{Term, style};
 use serde::Serialize;
 use textwrap::wrap;
 
@@ -85,9 +85,9 @@ pub fn goal_created(goal: &Goal, json: bool) -> Result<()> {
             w,
             "{} {}",
             style("Created goal:").green(),
-            style(&goal.id).cyan().bold()
+            style(goal.id()).cyan().bold()
         )?;
-        write_field(w, "  ", "Description", &goal.description)?;
+        write_field(w, "  ", "Description", goal.description())?;
         Ok(())
     })
 }
@@ -115,11 +115,11 @@ pub fn task_created(task: &Task, json: bool) -> Result<()> {
             w,
             "{} {}",
             style("Created task:").green(),
-            style(&task.id).cyan().bold()
+            style(task.id()).cyan().bold()
         )?;
-        write_field(w, "  ", "Description", &task.description)?;
-        writeln!(w, "  State: {}", style(task.state.as_ref()).yellow())?;
-        if task.contract.is_none() {
+        write_field(w, "  ", "Description", task.description())?;
+        writeln!(w, "  State: {}", style(task.state().as_ref()).yellow())?;
+        if task.contract().is_none() {
             writeln!(
                 w,
                 "  Contract: {}",
@@ -135,10 +135,10 @@ pub fn task_list(tasks: &[Task], goal: &Goal, verbose: bool, json: bool) -> Resu
         writeln!(
             w,
             "Tasks for goal: {} [{}]",
-            style(&goal.id).cyan().bold(),
-            style(goal.state.as_ref()).yellow()
+            style(goal.id()).cyan().bold(),
+            style(goal.state().as_ref()).yellow()
         )?;
-        write_field(w, "  ", "Description", &goal.description)?;
+        write_field(w, "  ", "Description", goal.description())?;
         writeln!(w)?;
 
         if tasks.is_empty() {
@@ -148,11 +148,11 @@ pub fn task_list(tasks: &[Task], goal: &Goal, verbose: bool, json: bool) -> Resu
 
         for task in tasks {
             task.render(w)?;
-            if verbose && !task.comments.is_empty() {
-                writeln!(w, "  Comments: ({})", task.comments.len())?;
-                for comment in &task.comments {
-                    writeln!(w, "    [{}]", style(&comment.created_at).dim())?;
-                    write_field(w, "    ", "", &comment.text)?;
+            if verbose && !task.comments().is_empty() {
+                writeln!(w, "  Comments: ({})", task.comments().len())?;
+                for comment in task.comments() {
+                    writeln!(w, "    [{}]", style(comment.created_at()).dim())?;
+                    write_field(w, "    ", "", comment.text())?;
                 }
             }
             writeln!(w)?;
@@ -167,9 +167,9 @@ pub fn task_started(task: &Task) -> Result<()> {
         w,
         "{} {}",
         style("Started task:").green(),
-        style(&task.id).cyan().bold()
+        style(task.id()).cyan().bold()
     )?;
-    write_field(&mut w, "  ", "Description", &task.description)?;
+    write_field(&mut w, "  ", "Description", task.description())?;
     Ok(())
 }
 
@@ -179,10 +179,10 @@ pub fn task_completed(result: &CompleteResult) -> Result<()> {
         w,
         "{} {}",
         style("Completed task:").green(),
-        style(&result.task.id).cyan().bold()
+        style(result.task.id()).cyan().bold()
     )?;
-    if let Some(ref res) = result.task.result {
-        write_field(&mut w, "  ", "Result", &res.summary)?;
+    if let Some(res) = result.task.result() {
+        write_field(&mut w, "  ", "Result", res.summary())?;
     }
 
     if !result.unblocked_task_ids.is_empty() {
@@ -201,9 +201,9 @@ pub fn task_failed(task: &Task) -> Result<()> {
         w,
         "{} {}",
         style("Failed task:").red(),
-        style(&task.id).cyan().bold()
+        style(task.id()).cyan().bold()
     )?;
-    write_field(&mut w, "  ", "Description", &task.description)?;
+    write_field(&mut w, "  ", "Description", task.description())?;
     Ok(())
 }
 
@@ -213,10 +213,10 @@ pub fn task_retry(task: &Task) -> Result<()> {
         w,
         "{} {}",
         style("Retrying task:").yellow(),
-        style(&task.id).cyan().bold()
+        style(task.id()).cyan().bold()
     )?;
-    write_field(&mut w, "  ", "Description", &task.description)?;
-    writeln!(w, "  Retry count: {}", task.metrics.retry_count)?;
+    write_field(&mut w, "  ", "Description", task.description())?;
+    writeln!(w, "  Retry count: {}", task.metrics().retry_count())?;
     Ok(())
 }
 
@@ -226,12 +226,12 @@ pub fn task_commented(task: &Task, json: bool) -> Result<()> {
             w,
             "{} {}",
             style("Added comment to task:").green(),
-            style(&task.id).cyan().bold()
+            style(task.id()).cyan().bold()
         )?;
-        if let Some(comment) = task.comments.last() {
-            write_field(w, "  ", "Comment", &comment.text)?;
+        if let Some(comment) = task.comments().last() {
+            write_field(w, "  ", "Comment", comment.text())?;
         }
-        writeln!(w, "  Total comments: {}", task.comments.len())?;
+        writeln!(w, "  Total comments: {}", task.comments().len())?;
         Ok(())
     })
 }
@@ -251,39 +251,39 @@ fn status_task(task: &Task, json: bool, concise: bool) -> Result<()> {
         writeln!(
             w,
             "Task: {} [{}]",
-            style(&task.id).cyan().bold(),
-            style(task.state.as_ref()).yellow()
+            style(task.id()).cyan().bold(),
+            style(task.state().as_ref()).yellow()
         )?;
-        writeln!(w, "  Goal: {}", task.goal_id)?;
-        write_field(w, "  ", "Description", &task.description)?;
-        writeln!(w, "  Created: {}", task.created_at)?;
-        writeln!(w, "  Updated: {}", task.updated_at)?;
+        writeln!(w, "  Goal: {}", task.goal_id())?;
+        write_field(w, "  ", "Description", task.description())?;
+        writeln!(w, "  Created: {}", task.created_at())?;
+        writeln!(w, "  Updated: {}", task.updated_at())?;
         writeln!(w)?;
 
-        match task.contract {
-            Some(ref contract) => {
+        match task.contract() {
+            Some(contract) => {
                 writeln!(w, "{}", style("Contract:").bold())?;
-                write_field(w, "  ", "Receives", &contract.receives)?;
-                write_field(w, "  ", "Produces", &contract.produces)?;
-                write_field(w, "  ", "Verify", &contract.verify)?;
+                write_field(w, "  ", "Receives", contract.receives())?;
+                write_field(w, "  ", "Produces", contract.produces())?;
+                write_field(w, "  ", "Verify", contract.verify())?;
             }
             None => {
                 writeln!(w, "Contract: {}", style("(not set)").dim())?;
             }
         }
 
-        if !task.blocked_by.is_empty() {
+        if !task.blocked_by().is_empty() {
             writeln!(w)?;
-            writeln!(w, "Blocked by: {}", task.blocked_by.join(", "))?;
+            writeln!(w, "Blocked by: {}", task.blocked_by().join(", "))?;
         }
 
-        if let Some(result) = &task.result {
+        if let Some(result) = task.result() {
             writeln!(w)?;
             writeln!(w, "{}", style("Result:").bold())?;
-            write_field(w, "  ", "Summary", &result.summary)?;
-            if !result.artifacts.is_empty() {
+            write_field(w, "  ", "Summary", result.summary())?;
+            if !result.artifacts().is_empty() {
                 writeln!(w, "  Artifacts:")?;
-                for artifact in &result.artifacts {
+                for artifact in result.artifacts() {
                     write_field(w, "    ", "-", artifact)?;
                 }
             }
@@ -291,16 +291,16 @@ fn status_task(task: &Task, json: bool, concise: bool) -> Result<()> {
 
         writeln!(w)?;
         writeln!(w, "{}", style("Metrics:").bold())?;
-        writeln!(w, "  Tokens: {}", task.metrics.tokens)?;
-        writeln!(w, "  Elapsed: {}ms", task.metrics.elapsed_ms)?;
-        writeln!(w, "  Retries: {}", task.metrics.retry_count)?;
+        writeln!(w, "  Tokens: {}", task.metrics().tokens())?;
+        writeln!(w, "  Elapsed: {}ms", task.metrics().elapsed_ms())?;
+        writeln!(w, "  Retries: {}", task.metrics().retry_count())?;
 
-        if !concise && !task.comments.is_empty() {
+        if !concise && !task.comments().is_empty() {
             writeln!(w)?;
             writeln!(w, "{}", style("Comments:").bold())?;
-            for comment in &task.comments {
-                writeln!(w, "  [{}]", style(&comment.created_at).dim())?;
-                write_field(w, "  ", "", &comment.text)?;
+            for comment in task.comments() {
+                writeln!(w, "  [{}]", style(comment.created_at()).dim())?;
+                write_field(w, "  ", "", comment.text())?;
             }
         }
 
@@ -310,19 +310,19 @@ fn status_task(task: &Task, json: bool, concise: bool) -> Result<()> {
 
 fn status_goal(goal_status: &GoalStatus, json: bool) -> Result<()> {
     json_or(goal_status, json, |w| {
-        let goal = &goal_status.goal;
-        let metrics = &goal_status.metrics;
+        let goal = &goal_status.goal();
+        let metrics = &goal_status.metrics();
 
         writeln!(
             w,
             "Goal: {} [{}]",
-            style(&goal.id).cyan().bold(),
-            style(goal.state.as_ref()).yellow()
+            style(goal.id()).cyan().bold(),
+            style(goal.state().as_ref()).yellow()
         )?;
-        write_field(w, "  ", "Description", &goal.description)?;
-        writeln!(w, "  Created: {}", goal.created_at)?;
-        writeln!(w, "  Updated: {}", goal.updated_at)?;
-        if let Some(completed_at) = &goal.completed_at {
+        write_field(w, "  ", "Description", goal.description())?;
+        writeln!(w, "  Created: {}", goal.created_at())?;
+        writeln!(w, "  Updated: {}", goal.updated_at())?;
+        if let Some(completed_at) = &goal.completed_at() {
             writeln!(w, "  Completed: {completed_at}")?;
         }
 
@@ -330,16 +330,16 @@ fn status_goal(goal_status: &GoalStatus, json: bool) -> Result<()> {
         writeln!(w, "{}", style("Metrics:").bold())?;
         metrics.render(w)?;
 
-        if !goal_status.tasks.is_empty() {
+        if !goal_status.tasks().is_empty() {
             writeln!(w)?;
             writeln!(w, "{}", style("Tasks:").bold())?;
-            for task in &goal_status.tasks {
+            for task in goal_status.tasks() {
                 writeln!(
                     w,
                     "  {} [{}] - {}",
-                    style(&task.id).cyan(),
-                    style(task.state.as_ref()).yellow(),
-                    task.description
+                    style(task.id()).cyan(),
+                    style(task.state().as_ref()).yellow(),
+                    task.description()
                 )?;
             }
         }
@@ -357,16 +357,16 @@ fn status_all_goals(summaries: &[GoalSummary], json: bool) -> Result<()> {
         writeln!(w, "{}\n", style("All Goals:").bold())?;
 
         for summary in summaries {
-            let goal = &summary.goal;
-            let metrics = &summary.computed_metrics;
+            let goal = &summary.goal();
+            let metrics = &summary.computed_metrics();
 
             writeln!(
                 w,
                 "{} [{}]",
-                style(&goal.id).cyan().bold(),
-                style(goal.state.as_ref()).yellow()
+                style(goal.id()).cyan().bold(),
+                style(goal.state().as_ref()).yellow()
             )?;
-            write_field(w, "  ", "Description", &goal.description)?;
+            write_field(w, "  ", "Description", goal.description())?;
             metrics.render(w)?;
             writeln!(w)?;
         }
@@ -381,10 +381,10 @@ pub fn ready_tasks(tasks: &[Task], goal: &Goal, json: bool) -> Result<()> {
         writeln!(
             w,
             "Ready tasks for goal: {} [{}]",
-            style(&goal.id).cyan().bold(),
-            style(goal.state.as_ref()).yellow()
+            style(goal.id()).cyan().bold(),
+            style(goal.state().as_ref()).yellow()
         )?;
-        write_field(w, "  ", "Description", &goal.description)?;
+        write_field(w, "  ", "Description", goal.description())?;
         writeln!(w)?;
 
         if tasks.is_empty() {
@@ -395,12 +395,12 @@ pub fn ready_tasks(tasks: &[Task], goal: &Goal, json: bool) -> Result<()> {
         writeln!(w, "{} task(s) ready:\n", style(tasks.len()).green().bold())?;
 
         for task in tasks {
-            writeln!(w, "{}", style(&task.id).cyan().bold())?;
-            write_field(w, "  ", "Description", &task.description)?;
-            if let Some(ref contract) = task.contract {
-                write_field(w, "  ", "Receives", &contract.receives)?;
-                write_field(w, "  ", "Produces", &contract.produces)?;
-                write_field(w, "  ", "Verify", &contract.verify)?;
+            writeln!(w, "{}", style(task.id()).cyan().bold())?;
+            write_field(w, "  ", "Description", task.description())?;
+            if let Some(contract) = task.contract() {
+                write_field(w, "  ", "Receives", contract.receives())?;
+                write_field(w, "  ", "Produces", contract.produces())?;
+                write_field(w, "  ", "Verify", contract.verify())?;
             }
             writeln!(w)?;
         }

@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use serde::Serialize;
 
 use crate::db::Database;
@@ -7,16 +7,40 @@ use crate::models::{Goal, Metrics, Task};
 #[derive(Debug, Serialize)]
 pub struct GoalStatus {
     #[serde(flatten)]
-    pub goal: Goal,
-    pub tasks: Vec<Task>,
-    pub metrics: Metrics,
+    goal: Goal,
+    tasks: Vec<Task>,
+    metrics: Metrics,
+}
+
+impl GoalStatus {
+    pub fn goal(&self) -> &Goal {
+        &self.goal
+    }
+
+    pub fn tasks(&self) -> &[Task] {
+        &self.tasks
+    }
+
+    pub fn metrics(&self) -> &Metrics {
+        &self.metrics
+    }
 }
 
 #[derive(Debug, Serialize)]
 pub struct GoalSummary {
     #[serde(flatten)]
-    pub goal: Goal,
-    pub computed_metrics: Metrics,
+    goal: Goal,
+    computed_metrics: Metrics,
+}
+
+impl GoalSummary {
+    pub fn goal(&self) -> &Goal {
+        &self.goal
+    }
+
+    pub fn computed_metrics(&self) -> &Metrics {
+        &self.computed_metrics
+    }
 }
 
 /// Result of a status query - can be a single task, single goal, or all goals.
@@ -69,7 +93,7 @@ fn get_all_goals(db: &Database) -> Vec<GoalSummary> {
     db.list_goals()
         .into_iter()
         .map(|goal| {
-            let computed_metrics = db.compute_goal_metrics(&goal.id);
+            let computed_metrics = db.compute_goal_metrics(goal.id());
             GoalSummary {
                 goal: goal.clone(),
                 computed_metrics,
