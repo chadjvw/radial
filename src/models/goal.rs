@@ -1,11 +1,14 @@
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use console::style;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use strum::{AsRefStr, EnumString};
 
 use crate::db::atomic_write;
+use crate::output::{write_field, Render};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, AsRefStr, EnumString)]
 #[serde(rename_all = "lowercase")]
@@ -51,5 +54,31 @@ impl Goal {
         let path = self.file_path(base);
         let content = toml::to_string(self).context("Failed to serialize goal")?;
         atomic_write(&path, content.as_bytes())
+    }
+}
+
+impl Render for Goal {
+    fn render(&self, w: &mut dyn Write) -> Result<()> {
+        writeln!(
+            w,
+            "{} [{}]",
+            style(&self.id).cyan().bold(),
+            style(self.state.as_ref()).yellow()
+        )?;
+        write_field(w, "  ", "Description", &self.description)?;
+        Ok(())
+    }
+}
+
+impl Render for Metrics {
+    fn render(&self, w: &mut dyn Write) -> Result<()> {
+        writeln!(
+            w,
+            "  Tasks: {} total, {} completed, {} failed",
+            self.task_count, self.tasks_completed, self.tasks_failed
+        )?;
+        writeln!(w, "  Tokens: {}", self.total_tokens)?;
+        writeln!(w, "  Elapsed: {}ms", self.elapsed_ms)?;
+        Ok(())
     }
 }
