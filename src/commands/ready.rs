@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 
 use crate::db::Database;
 use crate::models::{Task, TaskState};
@@ -10,7 +10,7 @@ pub fn run(goal_id: &str, db: &Database) -> Result<Vec<Task>> {
     Ok(db
         .list_tasks(goal_id)
         .into_iter()
-        .filter(|t| t.state == TaskState::Pending && t.contract.is_some())
+        .filter(|t| t.state() == TaskState::Pending && t.contract().is_some())
         .cloned()
         .collect())
 }

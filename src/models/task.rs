@@ -9,7 +9,7 @@ use strum::{AsRefStr, EnumString};
 
 use super::{Comment, Contract, Outcome};
 use crate::db::atomic_write;
-use crate::output::{write_field, Render};
+use crate::output::{Render, write_field};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, AsRefStr, EnumString)]
 #[serde(rename_all = "lowercase")]
@@ -25,33 +25,136 @@ pub enum TaskState {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TaskMetrics {
-    pub tokens: i64,
-    pub elapsed_ms: i64,
-    pub retry_count: i64,
+    tokens: i64,
+    elapsed_ms: i64,
+    retry_count: i64,
+}
+
+impl TaskMetrics {
+    pub fn new(tokens: i64, elapsed_ms: i64, retry_count: i64) -> Self {
+        Self {
+            tokens,
+            elapsed_ms,
+            retry_count,
+        }
+    }
+
+    pub fn tokens(&self) -> i64 {
+        self.tokens
+    }
+
+    pub fn elapsed_ms(&self) -> i64 {
+        self.elapsed_ms
+    }
+
+    pub fn retry_count(&self) -> i64 {
+        self.retry_count
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Task {
-    pub id: String,
-    pub goal_id: String,
-    pub description: String,
+    id: String,
+    goal_id: String,
+    description: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub contract: Option<Contract>,
-    pub state: TaskState,
+    contract: Option<Contract>,
+    state: TaskState,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub blocked_by: Vec<String>,
+    blocked_by: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub result: Option<Outcome>,
-    pub created_at: Timestamp,
-    pub updated_at: Timestamp,
+    result: Option<Outcome>,
+    created_at: Timestamp,
+    updated_at: Timestamp,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub completed_at: Option<Timestamp>,
-    pub metrics: TaskMetrics,
+    completed_at: Option<Timestamp>,
+    metrics: TaskMetrics,
     #[serde(default)]
-    pub comments: Vec<Comment>,
+    comments: Vec<Comment>,
 }
 
 impl Task {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        id: String,
+        goal_id: String,
+        description: String,
+        contract: Option<Contract>,
+        state: TaskState,
+        blocked_by: Vec<String>,
+        created_at: Timestamp,
+        updated_at: Timestamp,
+    ) -> Self {
+        Self {
+            id,
+            goal_id,
+            description,
+            contract,
+            state,
+            blocked_by,
+            result: None,
+            created_at,
+            updated_at,
+            completed_at: None,
+            metrics: TaskMetrics::default(),
+            comments: Vec::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn with_metrics(mut self, metrics: TaskMetrics) -> Self {
+        self.metrics = metrics;
+        self
+    }
+
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub fn goal_id(&self) -> &str {
+        &self.goal_id
+    }
+
+    pub fn description(&self) -> &str {
+        &self.description
+    }
+
+    pub fn contract(&self) -> Option<&Contract> {
+        self.contract.as_ref()
+    }
+
+    pub fn state(&self) -> TaskState {
+        self.state
+    }
+
+    pub fn blocked_by(&self) -> &[String] {
+        &self.blocked_by
+    }
+
+    pub fn result(&self) -> Option<&Outcome> {
+        self.result.as_ref()
+    }
+
+    pub fn created_at(&self) -> Timestamp {
+        self.created_at
+    }
+
+    pub fn updated_at(&self) -> Timestamp {
+        self.updated_at
+    }
+
+    pub fn completed_at(&self) -> Option<Timestamp> {
+        self.completed_at
+    }
+
+    pub fn metrics(&self) -> &TaskMetrics {
+        &self.metrics
+    }
+
+    pub fn comments(&self) -> &[Comment] {
+        &self.comments
+    }
+
     pub fn file_path(&self, base: &Path) -> PathBuf {
         base.join(&self.goal_id).join(format!("{}.toml", self.id))
     }
@@ -127,9 +230,9 @@ impl Render for Task {
         match self.contract {
             Some(ref contract) => {
                 writeln!(w, "  Contract:")?;
-                write_field(w, "    ", "Receives", &contract.receives)?;
-                write_field(w, "    ", "Produces", &contract.produces)?;
-                write_field(w, "    ", "Verify", &contract.verify)?;
+                write_field(w, "    ", "Receives", contract.receives())?;
+                write_field(w, "    ", "Produces", contract.produces())?;
+                write_field(w, "    ", "Verify", contract.verify())?;
             }
             None => {
                 writeln!(w, "  Contract: {}", style("(not set)").dim())?;
@@ -141,9 +244,9 @@ impl Render for Task {
         }
 
         if let Some(result) = &self.result {
-            write_field(w, "  ", "Result", &result.summary)?;
-            if !result.artifacts.is_empty() {
-                writeln!(w, "  Artifacts: {}", result.artifacts.join(", "))?;
+            write_field(w, "  ", "Result", result.summary())?;
+            if !result.artifacts().is_empty() {
+                writeln!(w, "  Artifacts: {}", result.artifacts().join(", "))?;
             }
         }
         Ok(())
@@ -188,8 +291,18 @@ mod tests {
     // task unchanged with its original updated_at timestamp.
     #[rstest]
     #[case::matching_pending(TaskState::Pending, TaskState::Pending, TaskState::InProgress, true)]
-    #[case::matching_in_progress(TaskState::InProgress, TaskState::InProgress, TaskState::Completed, true)]
-    #[case::mismatch_completed(TaskState::Completed, TaskState::Pending, TaskState::InProgress, false)]
+    #[case::matching_in_progress(
+        TaskState::InProgress,
+        TaskState::InProgress,
+        TaskState::Completed,
+        true
+    )]
+    #[case::mismatch_completed(
+        TaskState::Completed,
+        TaskState::Pending,
+        TaskState::InProgress,
+        false
+    )]
     #[case::mismatch_failed(TaskState::Failed, TaskState::Pending, TaskState::InProgress, false)]
     fn transition_checks_current_state(
         mut task: Task,
@@ -245,20 +358,13 @@ mod tests {
     #[rstest]
     fn complete_sets_all_fields(mut task: Task) {
         task.state = TaskState::InProgress;
-        let outcome = Outcome {
-            summary: "done".to_string(),
-            artifacts: vec!["file.txt".to_string()],
-        };
-        let metrics = TaskMetrics {
-            tokens: 100,
-            elapsed_ms: 5000,
-            retry_count: 1,
-        };
+        let outcome = Outcome::new("done".to_string(), vec!["file.txt".to_string()]);
+        let metrics = TaskMetrics::new(100, 5000, 1);
 
         assert!(task.complete(outcome, metrics));
         assert_eq!(task.state, TaskState::Completed);
         assert!(task.completed_at.is_some());
-        assert_eq!(task.result.as_ref().unwrap().summary, "done");
+        assert_eq!(task.result.as_ref().unwrap().summary(), "done");
         assert_eq!(task.metrics.tokens, 100);
         assert_eq!(task.metrics.retry_count, 1);
     }
@@ -272,10 +378,7 @@ mod tests {
     #[case::from_failed(TaskState::Failed)]
     fn complete_rejects_non_in_progress(mut task: Task, #[case] state: TaskState) {
         task.state = state;
-        let outcome = Outcome {
-            summary: "done".to_string(),
-            artifacts: Vec::new(),
-        };
+        let outcome = Outcome::new("done".to_string(), Vec::new());
         assert!(!task.complete(outcome, TaskMetrics::default()));
         assert_eq!(task.state, state);
         assert!(task.completed_at.is_none());
@@ -324,15 +427,11 @@ mod tests {
     #[rstest]
     fn add_comment_appends_and_updates_timestamp(mut task: Task) {
         let before = task.updated_at;
-        let comment = Comment {
-            id: "c_1".to_string(),
-            text: "hello".to_string(),
-            created_at: Timestamp::now(),
-        };
+        let comment = Comment::new("c_1".to_string(), "hello".to_string(), Timestamp::now());
         task.add_comment(comment);
 
         assert_eq!(task.comments.len(), 1);
-        assert_eq!(task.comments[0].text, "hello");
+        assert_eq!(task.comments[0].text(), "hello");
         assert!(task.updated_at >= before);
     }
 
@@ -359,11 +458,11 @@ mod tests {
     // When a contract is present, all three fields should appear.
     #[rstest]
     fn render_includes_contract_fields(mut task: Task) {
-        task.contract = Some(Contract {
-            receives: "input data".to_string(),
-            produces: "output data".to_string(),
-            verify: "check output".to_string(),
-        });
+        task.contract = Some(Contract::new(
+            "input data".to_string(),
+            "output data".to_string(),
+            "check output".to_string(),
+        ));
         let output = render_to_string(&task);
         assert!(output.contains("input data"));
         assert!(output.contains("output data"));
@@ -383,10 +482,10 @@ mod tests {
     #[rstest]
     fn render_includes_result(mut task: Task) {
         task.state = TaskState::Completed;
-        task.result = Some(Outcome {
-            summary: "all good".to_string(),
-            artifacts: vec!["out.txt".to_string()],
-        });
+        task.result = Some(Outcome::new(
+            "all good".to_string(),
+            vec!["out.txt".to_string()],
+        ));
         let output = render_to_string(&task);
         assert!(output.contains("all good"));
         assert!(output.contains("out.txt"));
