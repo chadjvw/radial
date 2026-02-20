@@ -1,478 +1,408 @@
+use std::io::{self, Write};
+
 use anyhow::Result;
 use console::{style, Term};
 use serde::Serialize;
+use textwrap::wrap;
 
 use crate::commands::status::{GoalStatus, GoalSummary, StatusResult};
 use crate::commands::task::CompleteResult;
 use crate::models::{Goal, Task};
 
-pub struct Output {
-    term: Term,
-    json: bool,
-    concise: bool,
-    verbose: bool,
+/// Trait for types that can render themselves as human-readable CLI output.
+pub trait Render {
+    fn render(&self, w: &mut dyn Write) -> Result<()>;
 }
 
-impl Output {
-    pub fn new(json: bool) -> Self {
-        Self {
-            term: Term::stdout(),
-            json,
-            concise: false,
-            verbose: false,
+/// Print as JSON if `json` is true, otherwise call `human` with a writer.
+fn json_or<T: Serialize + ?Sized>(
+    value: &T,
+    json: bool,
+    human: impl FnOnce(&mut dyn Write) -> Result<()>,
+) -> Result<()> {
+    let mut stdout = io::stdout().lock();
+    if json {
+        serde_json::to_writer_pretty(&mut stdout, value)?;
+        writeln!(stdout)?;
+    } else {
+        human(&mut stdout)?;
+    }
+    Ok(())
+}
+
+fn terminal_width() -> usize {
+    let (_, cols) = Term::stdout().size();
+    cols as usize
+}
+
+/// Write a labeled field, wrapping long or multiline values.
+///
+/// Short values print inline: `{prefix}{label}: {value}`
+/// Long or multiline values wrap onto indented continuation lines:
+/// ```text
+/// {prefix}{label}:
+/// {prefix}  {wrapped line 1}
+/// {prefix}  {wrapped line 2}
+/// ```
+pub fn write_field(w: &mut dyn Write, prefix: &str, label: &str, value: &str) -> Result<()> {
+    let width = terminal_width();
+    let inline_prefix = format!("{prefix}{label}: ");
+    let inline_len = inline_prefix.len() + value.len();
+
+    if !value.contains('\n') && inline_len <= width {
+        writeln!(w, "{inline_prefix}{value}")?;
+    } else {
+        writeln!(w, "{prefix}{label}:")?;
+        let continuation = format!("{prefix}  ");
+        let wrap_width = width.saturating_sub(continuation.len()).max(20);
+        for paragraph in value.split('\n') {
+            if paragraph.is_empty() {
+                writeln!(w)?;
+            } else {
+                for line in wrap(paragraph, wrap_width) {
+                    writeln!(w, "{continuation}{line}")?;
+                }
+            }
         }
     }
+    Ok(())
+}
 
-    pub fn with_concise(json: bool, concise: bool) -> Self {
-        Self {
-            term: Term::stdout(),
-            json,
-            concise,
-            verbose: false,
-        }
-    }
+// -- Goal outputs --
 
-    pub fn with_verbose(json: bool, verbose: bool) -> Self {
-        Self {
-            term: Term::stdout(),
-            json,
-            concise: false,
-            verbose,
-        }
-    }
-
-    fn print_json<T: Serialize + ?Sized>(&self, value: &T) -> Result<()> {
-        let output = serde_json::to_string_pretty(value)?;
-        self.term.write_line(&output)?;
-        Ok(())
-    }
-
-    pub fn goal_created(&self, goal: &Goal) -> Result<()> {
-        if self.json {
-            return self.print_json(goal);
-        }
-
-        self.term.write_line(&format!(
+pub fn goal_created(goal: &Goal, json: bool) -> Result<()> {
+    json_or(goal, json, |w| {
+        writeln!(
+            w,
             "{} {}",
             style("Created goal:").green(),
             style(&goal.id).cyan().bold()
-        ))?;
-        self.term
-            .write_line(&format!("  Description: {}", goal.description))?;
+        )?;
+        write_field(w, "  ", "Description", &goal.description)?;
         Ok(())
-    }
+    })
+}
 
-    pub fn goal_list(&self, goals: &[Goal]) -> Result<()> {
-        if self.json {
-            return self.print_json(goals);
-        }
-
+pub fn goal_list(goals: &[Goal], json: bool) -> Result<()> {
+    json_or(goals, json, |w| {
         if goals.is_empty() {
-            self.term.write_line("No goals found.")?;
+            writeln!(w, "No goals found.")?;
             return Ok(());
         }
 
         for goal in goals {
-            self.term.write_line(&format!(
-                "{} [{}]",
-                style(&goal.id).cyan().bold(),
-                style(goal.state.as_ref()).yellow()
-            ))?;
-            self.term
-                .write_line(&format!("  Description: {}", goal.description))?;
-            self.term.write_line("")?;
+            goal.render(w)?;
+            writeln!(w)?;
         }
         Ok(())
-    }
+    })
+}
 
-    pub fn task_created(&self, task: &Task) -> Result<()> {
-        if self.json {
-            return self.print_json(task);
-        }
+// -- Task outputs --
 
-        self.term.write_line(&format!(
+pub fn task_created(task: &Task, json: bool) -> Result<()> {
+    json_or(task, json, |w| {
+        writeln!(
+            w,
             "{} {}",
             style("Created task:").green(),
             style(&task.id).cyan().bold()
-        ))?;
-        self.term
-            .write_line(&format!("  Description: {}", task.description))?;
-        self.term
-            .write_line(&format!("  State: {}", style(task.state.as_ref()).yellow()))?;
+        )?;
+        write_field(w, "  ", "Description", &task.description)?;
+        writeln!(w, "  State: {}", style(task.state.as_ref()).yellow())?;
         if task.contract.is_none() {
-            self.term.write_line(&format!(
+            writeln!(
+                w,
                 "  Contract: {}",
                 style("(not set - required before starting)").dim()
-            ))?;
+            )?;
         }
         Ok(())
-    }
+    })
+}
 
-    pub fn task_list(&self, tasks: &[Task], goal: &Goal) -> Result<()> {
-        if self.json {
-            return self.print_json(tasks);
-        }
-
-        self.term.write_line(&format!(
+pub fn task_list(tasks: &[Task], goal: &Goal, verbose: bool, json: bool) -> Result<()> {
+    json_or(tasks, json, |w| {
+        writeln!(
+            w,
             "Tasks for goal: {} [{}]",
             style(&goal.id).cyan().bold(),
             style(goal.state.as_ref()).yellow()
-        ))?;
-        self.term.write_line(&format!("  {}", goal.description))?;
-        self.term.write_line("")?;
+        )?;
+        write_field(w, "  ", "Description", &goal.description)?;
+        writeln!(w)?;
 
         if tasks.is_empty() {
-            self.term.write_line("No tasks found.")?;
+            writeln!(w, "No tasks found.")?;
             return Ok(());
         }
 
         for task in tasks {
-            self.print_task_summary(task)?;
-            if self.verbose && !task.comments.is_empty() {
-                self.term
-                    .write_line(&format!("  Comments: ({})", task.comments.len()))?;
+            task.render(w)?;
+            if verbose && !task.comments.is_empty() {
+                writeln!(w, "  Comments: ({})", task.comments.len())?;
                 for comment in &task.comments {
-                    self.term.write_line(&format!(
-                        "    [{}] {}",
-                        style(&comment.created_at).dim(),
-                        comment.text
-                    ))?;
+                    writeln!(w, "    [{}]", style(&comment.created_at).dim())?;
+                    write_field(w, "    ", "", &comment.text)?;
                 }
             }
-            self.term.write_line("")?;
+            writeln!(w)?;
         }
         Ok(())
+    })
+}
+
+pub fn task_started(task: &Task) -> Result<()> {
+    let mut w = io::stdout().lock();
+    writeln!(
+        w,
+        "{} {}",
+        style("Started task:").green(),
+        style(&task.id).cyan().bold()
+    )?;
+    write_field(&mut w, "  ", "Description", &task.description)?;
+    Ok(())
+}
+
+pub fn task_completed(result: &CompleteResult) -> Result<()> {
+    let mut w = io::stdout().lock();
+    writeln!(
+        w,
+        "{} {}",
+        style("Completed task:").green(),
+        style(&result.task.id).cyan().bold()
+    )?;
+    if let Some(ref res) = result.task.result {
+        write_field(&mut w, "  ", "Result", &res.summary)?;
     }
 
-    fn print_task_summary(&self, task: &Task) -> Result<()> {
-        self.term.write_line(&format!(
-            "{} [{}]",
-            style(&task.id).cyan().bold(),
-            style(task.state.as_ref()).yellow()
-        ))?;
-        self.term
-            .write_line(&format!("  Description: {}", task.description))?;
-
-        if let Some(ref contract) = task.contract {
-            self.term.write_line("  Contract:")?;
-            self.term
-                .write_line(&format!("    Receives: {}", contract.receives))?;
-            self.term
-                .write_line(&format!("    Produces: {}", contract.produces))?;
-            self.term
-                .write_line(&format!("    Verify: {}", contract.verify))?;
-        } else {
-            self.term
-                .write_line(&format!("  Contract: {}", style("(not set)").dim()))?;
+    if !result.unblocked_task_ids.is_empty() {
+        writeln!(w)?;
+        writeln!(w, "{}", style("Unblocked tasks:").yellow())?;
+        for id in &result.unblocked_task_ids {
+            writeln!(w, "  - {}", style(id).cyan())?;
         }
-
-        if !task.blocked_by.is_empty() {
-            self.term
-                .write_line(&format!("  Blocked by: {}", task.blocked_by.join(", ")))?;
-        }
-
-        if let Some(result) = &task.result {
-            self.term
-                .write_line(&format!("  Result: {}", result.summary))?;
-            if !result.artifacts.is_empty() {
-                self.term
-                    .write_line(&format!("  Artifacts: {}", result.artifacts.join(", ")))?;
-            }
-        }
-        Ok(())
     }
+    Ok(())
+}
 
-    pub fn task_started(&self, task: &Task) -> Result<()> {
-        self.term.write_line(&format!(
-            "{} {}",
-            style("Started task:").green(),
-            style(&task.id).cyan().bold()
-        ))?;
-        self.term
-            .write_line(&format!("  Description: {}", task.description))?;
-        Ok(())
-    }
+pub fn task_failed(task: &Task) -> Result<()> {
+    let mut w = io::stdout().lock();
+    writeln!(
+        w,
+        "{} {}",
+        style("Failed task:").red(),
+        style(&task.id).cyan().bold()
+    )?;
+    write_field(&mut w, "  ", "Description", &task.description)?;
+    Ok(())
+}
 
-    pub fn task_completed(&self, result: &CompleteResult) -> Result<()> {
-        self.term.write_line(&format!(
-            "{} {}",
-            style("Completed task:").green(),
-            style(&result.task.id).cyan().bold()
-        ))?;
-        if let Some(ref res) = result.task.result {
-            self.term
-                .write_line(&format!("  Result: {}", res.summary))?;
-        }
+pub fn task_retry(task: &Task) -> Result<()> {
+    let mut w = io::stdout().lock();
+    writeln!(
+        w,
+        "{} {}",
+        style("Retrying task:").yellow(),
+        style(&task.id).cyan().bold()
+    )?;
+    write_field(&mut w, "  ", "Description", &task.description)?;
+    writeln!(w, "  Retry count: {}", task.metrics.retry_count)?;
+    Ok(())
+}
 
-        if !result.unblocked_task_ids.is_empty() {
-            self.term.write_line("")?;
-            self.term
-                .write_line(&style("Unblocked tasks:").yellow().to_string())?;
-            for id in &result.unblocked_task_ids {
-                self.term.write_line(&format!("  - {}", style(id).cyan()))?;
-            }
-        }
-        Ok(())
-    }
-
-    pub fn task_failed(&self, task: &Task) -> Result<()> {
-        self.term.write_line(&format!(
-            "{} {}",
-            style("Failed task:").red(),
-            style(&task.id).cyan().bold()
-        ))?;
-        self.term
-            .write_line(&format!("  Description: {}", task.description))?;
-        Ok(())
-    }
-
-    pub fn task_retry(&self, task: &Task) -> Result<()> {
-        self.term.write_line(&format!(
-            "{} {}",
-            style("Retrying task:").yellow(),
-            style(&task.id).cyan().bold()
-        ))?;
-        self.term
-            .write_line(&format!("  Description: {}", task.description))?;
-        self.term
-            .write_line(&format!("  Retry count: {}", task.metrics.retry_count))?;
-        Ok(())
-    }
-
-    pub fn task_commented(&self, task: &Task) -> Result<()> {
-        if self.json {
-            return self.print_json(task);
-        }
-
-        self.term.write_line(&format!(
+pub fn task_commented(task: &Task, json: bool) -> Result<()> {
+    json_or(task, json, |w| {
+        writeln!(
+            w,
             "{} {}",
             style("Added comment to task:").green(),
             style(&task.id).cyan().bold()
-        ))?;
+        )?;
         if let Some(comment) = task.comments.last() {
-            self.term
-                .write_line(&format!("  Comment: {}", comment.text))?;
+            write_field(w, "  ", "Comment", &comment.text)?;
         }
-        self.term
-            .write_line(&format!("  Total comments: {}", task.comments.len()))?;
+        writeln!(w, "  Total comments: {}", task.comments.len())?;
         Ok(())
+    })
+}
+
+// -- Status outputs --
+
+pub fn status(result: &StatusResult, json: bool, concise: bool) -> Result<()> {
+    match result {
+        StatusResult::Task(task) => status_task(task, json, concise),
+        StatusResult::Goal(goal_status) => status_goal(goal_status, json),
+        StatusResult::AllGoals(summaries) => status_all_goals(summaries, json),
     }
+}
 
-    pub fn status(&self, result: &StatusResult) -> Result<()> {
-        match result {
-            StatusResult::Task(task) => self.status_task(task),
-            StatusResult::Goal(goal_status) => self.status_goal(goal_status),
-            StatusResult::AllGoals(summaries) => self.status_all_goals(summaries),
-        }
-    }
-
-    fn status_task(&self, task: &Task) -> Result<()> {
-        if self.json {
-            return self.print_json(task);
-        }
-
-        self.term.write_line(&format!(
+fn status_task(task: &Task, json: bool, concise: bool) -> Result<()> {
+    json_or(task, json, |w| {
+        writeln!(
+            w,
             "Task: {} [{}]",
             style(&task.id).cyan().bold(),
             style(task.state.as_ref()).yellow()
-        ))?;
-        self.term.write_line(&format!("  Goal: {}", task.goal_id))?;
-        self.term
-            .write_line(&format!("  Description: {}", task.description))?;
-        self.term
-            .write_line(&format!("  Created: {}", task.created_at))?;
-        self.term
-            .write_line(&format!("  Updated: {}", task.updated_at))?;
-        self.term.write_line("")?;
+        )?;
+        writeln!(w, "  Goal: {}", task.goal_id)?;
+        write_field(w, "  ", "Description", &task.description)?;
+        writeln!(w, "  Created: {}", task.created_at)?;
+        writeln!(w, "  Updated: {}", task.updated_at)?;
+        writeln!(w)?;
 
-        if let Some(ref contract) = task.contract {
-            self.term
-                .write_line(&style("Contract:").bold().to_string())?;
-            self.term
-                .write_line(&format!("  Receives: {}", contract.receives))?;
-            self.term
-                .write_line(&format!("  Produces: {}", contract.produces))?;
-            self.term
-                .write_line(&format!("  Verify: {}", contract.verify))?;
-        } else {
-            self.term
-                .write_line(&format!("Contract: {}", style("(not set)").dim()))?;
+        match task.contract {
+            Some(ref contract) => {
+                writeln!(w, "{}", style("Contract:").bold())?;
+                write_field(w, "  ", "Receives", &contract.receives)?;
+                write_field(w, "  ", "Produces", &contract.produces)?;
+                write_field(w, "  ", "Verify", &contract.verify)?;
+            }
+            None => {
+                writeln!(w, "Contract: {}", style("(not set)").dim())?;
+            }
         }
 
         if !task.blocked_by.is_empty() {
-            self.term.write_line("")?;
-            self.term
-                .write_line(&format!("Blocked by: {}", task.blocked_by.join(", ")))?;
+            writeln!(w)?;
+            writeln!(w, "Blocked by: {}", task.blocked_by.join(", "))?;
         }
 
         if let Some(result) = &task.result {
-            self.term.write_line("")?;
-            self.term.write_line(&style("Result:").bold().to_string())?;
-            self.term
-                .write_line(&format!("  Summary: {}", result.summary))?;
+            writeln!(w)?;
+            writeln!(w, "{}", style("Result:").bold())?;
+            write_field(w, "  ", "Summary", &result.summary)?;
             if !result.artifacts.is_empty() {
-                self.term.write_line("  Artifacts:")?;
+                writeln!(w, "  Artifacts:")?;
                 for artifact in &result.artifacts {
-                    self.term.write_line(&format!("    - {artifact}"))?;
+                    write_field(w, "    ", "-", artifact)?;
                 }
             }
         }
 
-        self.term.write_line("")?;
-        self.term
-            .write_line(&style("Metrics:").bold().to_string())?;
-        self.term
-            .write_line(&format!("  Tokens: {}", task.metrics.tokens))?;
-        self.term
-            .write_line(&format!("  Elapsed: {}ms", task.metrics.elapsed_ms))?;
-        self.term
-            .write_line(&format!("  Retries: {}", task.metrics.retry_count))?;
+        writeln!(w)?;
+        writeln!(w, "{}", style("Metrics:").bold())?;
+        writeln!(w, "  Tokens: {}", task.metrics.tokens)?;
+        writeln!(w, "  Elapsed: {}ms", task.metrics.elapsed_ms)?;
+        writeln!(w, "  Retries: {}", task.metrics.retry_count)?;
 
-        if !self.concise && !task.comments.is_empty() {
-            self.term.write_line("")?;
-            self.term
-                .write_line(&style("Comments:").bold().to_string())?;
+        if !concise && !task.comments.is_empty() {
+            writeln!(w)?;
+            writeln!(w, "{}", style("Comments:").bold())?;
             for comment in &task.comments {
-                self.term.write_line(&format!(
-                    "  [{}] {}",
-                    style(&comment.created_at).dim(),
-                    comment.text
-                ))?;
+                writeln!(w, "  [{}]", style(&comment.created_at).dim())?;
+                write_field(w, "  ", "", &comment.text)?;
             }
         }
 
         Ok(())
-    }
+    })
+}
 
-    fn status_goal(&self, goal_status: &GoalStatus) -> Result<()> {
-        if self.json {
-            return self.print_json(goal_status);
-        }
-
+fn status_goal(goal_status: &GoalStatus, json: bool) -> Result<()> {
+    json_or(goal_status, json, |w| {
         let goal = &goal_status.goal;
         let metrics = &goal_status.metrics;
 
-        self.term.write_line(&format!(
+        writeln!(
+            w,
             "Goal: {} [{}]",
             style(&goal.id).cyan().bold(),
             style(goal.state.as_ref()).yellow()
-        ))?;
-        self.term
-            .write_line(&format!("  Description: {}", goal.description))?;
-        self.term
-            .write_line(&format!("  Created: {}", goal.created_at))?;
-        self.term
-            .write_line(&format!("  Updated: {}", goal.updated_at))?;
+        )?;
+        write_field(w, "  ", "Description", &goal.description)?;
+        writeln!(w, "  Created: {}", goal.created_at)?;
+        writeln!(w, "  Updated: {}", goal.updated_at)?;
         if let Some(completed_at) = &goal.completed_at {
-            self.term
-                .write_line(&format!("  Completed: {completed_at}"))?;
+            writeln!(w, "  Completed: {completed_at}")?;
         }
-        self.term.write_line("")?;
 
-        self.term
-            .write_line(&style("Metrics:").bold().to_string())?;
-        self.term.write_line(&format!(
-            "  Tasks: {} total, {} completed, {} failed",
-            metrics.task_count, metrics.tasks_completed, metrics.tasks_failed
-        ))?;
-        self.term
-            .write_line(&format!("  Tokens: {}", metrics.total_tokens))?;
-        self.term
-            .write_line(&format!("  Elapsed: {}ms", metrics.elapsed_ms))?;
+        writeln!(w)?;
+        writeln!(w, "{}", style("Metrics:").bold())?;
+        metrics.render(w)?;
 
         if !goal_status.tasks.is_empty() {
-            self.term.write_line("")?;
-            self.term.write_line(&style("Tasks:").bold().to_string())?;
+            writeln!(w)?;
+            writeln!(w, "{}", style("Tasks:").bold())?;
             for task in &goal_status.tasks {
-                self.term.write_line(&format!(
+                writeln!(
+                    w,
                     "  {} [{}] - {}",
                     style(&task.id).cyan(),
                     style(task.state.as_ref()).yellow(),
                     task.description
-                ))?;
+                )?;
             }
         }
         Ok(())
-    }
+    })
+}
 
-    fn status_all_goals(&self, summaries: &[GoalSummary]) -> Result<()> {
-        if self.json {
-            return self.print_json(summaries);
-        }
-
+fn status_all_goals(summaries: &[GoalSummary], json: bool) -> Result<()> {
+    json_or(summaries, json, |w| {
         if summaries.is_empty() {
-            self.term.write_line("No goals found.")?;
+            writeln!(w, "No goals found.")?;
             return Ok(());
         }
 
-        self.term
-            .write_line(&style("All Goals:").bold().to_string())?;
-        self.term.write_line("")?;
+        writeln!(w, "{}\n", style("All Goals:").bold())?;
 
         for summary in summaries {
             let goal = &summary.goal;
             let metrics = &summary.computed_metrics;
 
-            self.term.write_line(&format!(
+            writeln!(
+                w,
                 "{} [{}]",
                 style(&goal.id).cyan().bold(),
                 style(goal.state.as_ref()).yellow()
-            ))?;
-            self.term
-                .write_line(&format!("  Description: {}", goal.description))?;
-            self.term.write_line(&format!(
-                "  Tasks: {} total, {} completed, {} failed",
-                metrics.task_count, metrics.tasks_completed, metrics.tasks_failed
-            ))?;
-            self.term.write_line("")?;
+            )?;
+            write_field(w, "  ", "Description", &goal.description)?;
+            metrics.render(w)?;
+            writeln!(w)?;
         }
         Ok(())
-    }
+    })
+}
 
-    pub fn ready_tasks(&self, tasks: &[Task], goal: &Goal) -> Result<()> {
-        if self.json {
-            return self.print_json(tasks);
-        }
+// -- Ready --
 
-        self.term.write_line(&format!(
+pub fn ready_tasks(tasks: &[Task], goal: &Goal, json: bool) -> Result<()> {
+    json_or(tasks, json, |w| {
+        writeln!(
+            w,
             "Ready tasks for goal: {} [{}]",
             style(&goal.id).cyan().bold(),
             style(goal.state.as_ref()).yellow()
-        ))?;
-        self.term.write_line(&format!("  {}", goal.description))?;
-        self.term.write_line("")?;
+        )?;
+        write_field(w, "  ", "Description", &goal.description)?;
+        writeln!(w)?;
 
         if tasks.is_empty() {
-            self.term.write_line("No tasks ready to start.")?;
+            writeln!(w, "No tasks ready to start.")?;
             return Ok(());
         }
 
-        self.term.write_line(&format!(
-            "{} task(s) ready:",
-            style(tasks.len()).green().bold()
-        ))?;
-        self.term.write_line("")?;
+        writeln!(w, "{} task(s) ready:\n", style(tasks.len()).green().bold())?;
 
         for task in tasks {
-            self.term
-                .write_line(&style(&task.id).cyan().bold().to_string())?;
-            self.term
-                .write_line(&format!("  Description: {}", task.description))?;
+            writeln!(w, "{}", style(&task.id).cyan().bold())?;
+            write_field(w, "  ", "Description", &task.description)?;
             if let Some(ref contract) = task.contract {
-                self.term
-                    .write_line(&format!("  Receives: {}", contract.receives))?;
-                self.term
-                    .write_line(&format!("  Produces: {}", contract.produces))?;
-                self.term
-                    .write_line(&format!("  Verify: {}", contract.verify))?;
+                write_field(w, "  ", "Receives", &contract.receives)?;
+                write_field(w, "  ", "Produces", &contract.produces)?;
+                write_field(w, "  ", "Verify", &contract.verify)?;
             }
-            self.term.write_line("")?;
+            writeln!(w)?;
         }
         Ok(())
-    }
+    })
+}
 
-    pub fn prep(&self, text: &str) -> Result<()> {
-        self.term.write_line(text)?;
-        Ok(())
-    }
+// -- Prep --
+
+pub fn prep(text: &str) -> Result<()> {
+    let mut w = io::stdout().lock();
+    writeln!(w, "{text}")?;
+    Ok(())
 }

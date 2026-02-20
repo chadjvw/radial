@@ -1,12 +1,15 @@
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use console::style;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use strum::{AsRefStr, EnumString};
 
 use super::{Comment, Contract, Outcome};
 use crate::db::atomic_write;
+use crate::output::{write_field, Render};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, AsRefStr, EnumString)]
 #[serde(rename_all = "lowercase")]
@@ -108,5 +111,41 @@ impl Task {
     pub fn add_comment(&mut self, comment: Comment) {
         self.comments.push(comment);
         self.updated_at = Timestamp::now();
+    }
+}
+
+impl Render for Task {
+    fn render(&self, w: &mut dyn Write) -> Result<()> {
+        writeln!(
+            w,
+            "{} [{}]",
+            style(&self.id).cyan().bold(),
+            style(self.state.as_ref()).yellow()
+        )?;
+        write_field(w, "  ", "Description", &self.description)?;
+
+        match self.contract {
+            Some(ref contract) => {
+                writeln!(w, "  Contract:")?;
+                write_field(w, "    ", "Receives", &contract.receives)?;
+                write_field(w, "    ", "Produces", &contract.produces)?;
+                write_field(w, "    ", "Verify", &contract.verify)?;
+            }
+            None => {
+                writeln!(w, "  Contract: {}", style("(not set)").dim())?;
+            }
+        }
+
+        if !self.blocked_by.is_empty() {
+            writeln!(w, "  Blocked by: {}", self.blocked_by.join(", "))?;
+        }
+
+        if let Some(result) = &self.result {
+            write_field(w, "  ", "Result", &result.summary)?;
+            if !result.artifacts.is_empty() {
+                writeln!(w, "  Artifacts: {}", result.artifacts.join(", "))?;
+            }
+        }
+        Ok(())
     }
 }

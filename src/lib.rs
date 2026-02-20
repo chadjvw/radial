@@ -15,7 +15,6 @@ use std::path::PathBuf;
 
 use cli::{Cli, Commands, GoalCommands, TaskCommands};
 use db::Database;
-use output::Output;
 
 pub const RADIAL_DIR: &str = ".radial";
 pub const REDIRECT_FILE: &str = "redirect";
@@ -75,11 +74,11 @@ fn run_goal(goal_cmd: GoalCommands, db: &mut Database) -> Result<()> {
     match goal_cmd {
         GoalCommands::Create { description, json } => {
             let goal = commands::goal::create(description, db)?;
-            Output::new(json).goal_created(&goal)
+            output::goal_created(&goal, json)
         }
         GoalCommands::List { json } => {
             let goals = commands::goal::list(db);
-            Output::new(json).goal_list(&goals)
+            output::goal_list(&goals, json)
         }
     }
 }
@@ -104,7 +103,7 @@ fn run_task(task_cmd: TaskCommands, db: &mut Database) -> Result<()> {
                 blocked_by,
                 db,
             )?;
-            Output::new(json).task_created(&task)
+            output::task_created(&task, json)
         }
         TaskCommands::List {
             goal_id,
@@ -115,11 +114,11 @@ fn run_task(task_cmd: TaskCommands, db: &mut Database) -> Result<()> {
             let goal = db
                 .get_goal(&goal_id)
                 .ok_or_else(|| anyhow!("Goal not found: {goal_id}"))?;
-            Output::with_verbose(json, verbose).task_list(&tasks, goal)
+            output::task_list(&tasks, goal, verbose, json)
         }
         TaskCommands::Start { task_id } => {
             let task = commands::task::start(&task_id, db)?;
-            Output::new(false).task_started(&task)
+            output::task_started(&task)
         }
         TaskCommands::Complete {
             task_id,
@@ -130,19 +129,19 @@ fn run_task(task_cmd: TaskCommands, db: &mut Database) -> Result<()> {
         } => {
             let complete_result =
                 commands::task::complete(&task_id, result, artifacts, tokens, elapsed, db)?;
-            Output::new(false).task_completed(&complete_result)
+            output::task_completed(&complete_result)
         }
         TaskCommands::Fail { task_id } => {
             let task = commands::task::fail(&task_id, db)?;
-            Output::new(false).task_failed(&task)
+            output::task_failed(&task)
         }
         TaskCommands::Retry { task_id } => {
             let task = commands::task::retry(&task_id, db)?;
-            Output::new(false).task_retry(&task)
+            output::task_retry(&task)
         }
         TaskCommands::Comment { task_id, text } => {
             let task = commands::task::comment(&task_id, text, db)?;
-            Output::new(false).task_commented(&task)
+            output::task_commented(&task, false)
         }
     }
 }
@@ -166,7 +165,7 @@ pub fn run(cli: Cli) -> Result<()> {
         } => {
             let db = ensure_initialized()?;
             let result = commands::status::run(goal, task, &db)?;
-            Output::with_concise(json, concise).status(&result)
+            output::status(&result, json, concise)
         }
         Commands::Ready { goal_id, json } => {
             let db = ensure_initialized()?;
@@ -174,11 +173,11 @@ pub fn run(cli: Cli) -> Result<()> {
             let goal = db
                 .get_goal(&goal_id)
                 .ok_or_else(|| anyhow!("Goal not found: {goal_id}"))?;
-            Output::new(json).ready_tasks(&tasks, goal)
+            output::ready_tasks(&tasks, goal, json)
         }
         Commands::Prep => {
             let text = commands::prep::run();
-            Output::new(false).prep(text)
+            output::prep(text)
         }
     }
 }
