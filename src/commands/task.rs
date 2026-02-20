@@ -4,7 +4,7 @@ use jiff::Timestamp;
 use crate::db::Database;
 use crate::helpers::find_similar_id;
 use crate::id::generate_id;
-use crate::models::{Comment, Contract, GoalState, Task, TaskMetrics, TaskState};
+use crate::models::{Comment, Contract, GoalState, Outcome, Task, TaskMetrics, TaskState};
 
 /// Result of completing a task, including any unblocked tasks.
 #[derive(Debug)]
@@ -23,10 +23,10 @@ pub fn create(
     blocked_by: Option<Vec<String>>,
     db: &mut Database,
 ) -> Result<Task> {
-    let goal = db.get_goal(&goal_id)?;
+    let goal = db.get_goal(&goal_id);
 
     if goal.is_none() {
-        let all_goals = db.list_goals()?;
+        let all_goals = db.list_goals();
         let goal_ids: Vec<String> = all_goals.iter().map(|g| g.id.clone()).collect();
 
         return if let Some(suggestion) = find_similar_id(&goal_id, &goal_ids) {
@@ -39,10 +39,12 @@ pub fn create(
     }
 
     let goal = goal.unwrap();
+    let goal_id_owned = goal.id.clone();
+    let goal_state = goal.state.clone();
 
     // Validate blocked_by task IDs exist
     if let Some(ref task_ids) = blocked_by {
-        let all_tasks = db.list_tasks(&goal.id)?;
+        let all_tasks = db.list_tasks(&goal_id_owned);
         let existing_task_ids: Vec<String> = all_tasks.iter().map(|t| t.id.clone()).collect();
 
         for task_id in task_ids {
@@ -75,7 +77,7 @@ pub fn create(
     let now = Timestamp::now();
     let task = Task {
         id: generate_id(),
-        goal_id: goal.id.clone(),
+        goal_id: goal_id_owned.clone(),
         description,
         contract,
         state: if blocked_by_ids.is_empty() {
@@ -92,40 +94,35 @@ pub fn create(
         comments: Vec::new(),
     };
 
-    db.create_task(&task)?;
+    db.create_task(task.clone())?;
 
-    let mut updated_goal = goal;
-    updated_goal.updated_at = Timestamp::now();
-    if updated_goal.state == GoalState::Pending {
-        updated_goal.state = GoalState::InProgress;
+    // Update the goal
+    let base = db.base_path().to_owned();
+    let goal = db.get_goal_mut(&goal_id_owned).unwrap();
+    goal.updated_at = Timestamp::now();
+    if goal_state == GoalState::Pending {
+        goal.state = GoalState::InProgress;
     }
-    db.update_goal(&updated_goal)?;
+    goal.write_file(&base)?;
 
     Ok(task)
 }
 
 pub fn list(goal_id: String, db: &Database) -> Result<Vec<Task>> {
-    let _goal = db
-        .get_goal(&goal_id)?
+    db.get_goal(&goal_id)
         .ok_or_else(|| anyhow!("Goal not found: {goal_id}"))?;
 
-    db.list_tasks(&goal_id)
+    Ok(db.list_tasks(&goal_id).into_iter().cloned().collect())
 }
 
 pub fn start(task_id: String, db: &mut Database) -> Result<Task> {
-    let task = db.get_task(&task_id)?;
+    let task = db.get_task(&task_id);
 
     if task.is_none() {
-        // Get all tasks across all goals for suggestions
         let all_task_ids: Vec<String> = db
-            .list_goals()?
+            .list_goals()
             .iter()
-            .flat_map(|goal| {
-                db.list_tasks(&goal.id)
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|t| t.id)
-            })
+            .flat_map(|goal| db.list_tasks(&goal.id).into_iter().map(|t| t.id.clone()))
             .collect();
 
         return if let Some(suggestion) = find_similar_id(&task_id, &all_task_ids) {
@@ -160,23 +157,16 @@ pub fn start(task_id: String, db: &mut Database) -> Result<Task> {
         ));
     }
 
-    let updated_at = Timestamp::now().to_string();
-    let transitioned = db.transition_task_state(
-        &task.id,
-        &TaskState::Pending,
-        &TaskState::InProgress,
-        &updated_at,
-    )?;
-
-    if !transitioned {
+    let base = db.base_path().to_owned();
+    let task = db.get_task_mut(&task_id).unwrap();
+    if !task.transition(TaskState::Pending, TaskState::InProgress) {
         return Err(anyhow!(
             "Failed to start task: another process may have already started it"
         ));
     }
+    task.write_file(&base)?;
 
-    // Re-fetch to get the updated state
-    db.get_task(&task_id)?
-        .ok_or_else(|| anyhow!("Task not found after transition"))
+    Ok(task.clone())
 }
 
 pub fn complete(
@@ -187,19 +177,13 @@ pub fn complete(
     elapsed: Option<i64>,
     db: &mut Database,
 ) -> Result<CompleteResult> {
-    let task = db.get_task(&task_id)?;
+    let task = db.get_task(&task_id);
 
     if task.is_none() {
-        // Get all tasks across all goals for suggestions
         let all_task_ids: Vec<String> = db
-            .list_goals()?
+            .list_goals()
             .iter()
-            .flat_map(|goal| {
-                db.list_tasks(&goal.id)
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|t| t.id)
-            })
+            .flat_map(|goal| db.list_tasks(&goal.id).into_iter().map(|t| t.id.clone()))
             .collect();
 
         return if let Some(suggestion) = find_similar_id(&task_id, &all_task_ids) {
@@ -220,95 +204,87 @@ pub fn complete(
         ));
     }
 
-    let now = Timestamp::now();
-    let updated_at = now.to_string();
-    let completed_at = now.to_string();
+    let goal_id = task.goal_id.clone();
     let artifacts_list = artifacts.unwrap_or_default();
 
-    let transitioned = db.complete_task(
-        &task.id,
-        &result_summary,
-        artifacts_list,
-        tokens.unwrap_or(0),
-        elapsed.unwrap_or(0),
-        &updated_at,
-        &completed_at,
-    )?;
+    let outcome = Outcome {
+        summary: result_summary,
+        artifacts: artifacts_list,
+    };
+    let metrics = TaskMetrics {
+        tokens: tokens.unwrap_or(0),
+        elapsed_ms: elapsed.unwrap_or(0),
+        retry_count: task.metrics.retry_count,
+    };
 
-    if !transitioned {
+    let base = db.base_path().to_owned();
+    let task = db.get_task_mut(&task_id).unwrap();
+    if !task.complete(outcome, metrics) {
         return Err(anyhow!(
             "Failed to complete task: another process may have changed its state"
         ));
     }
+    task.write_file(&base)?;
+    let completed_task = task.clone();
 
-    // Re-fetch for subsequent logic
-    let task = db.get_task(&task_id)?.unwrap();
+    // Collect IDs of tasks to potentially unblock
+    let tasks_snapshot: Vec<(String, TaskState, Vec<String>)> = db
+        .list_tasks(&goal_id)
+        .iter()
+        .map(|t| (t.id.clone(), t.state.clone(), t.blocked_by.clone()))
+        .collect();
 
-    let mut goal = db
-        .get_goal(&task.goal_id)?
-        .ok_or_else(|| anyhow!("Goal not found: {}", task.goal_id))?;
-
-    goal.updated_at = Timestamp::now();
-
-    let all_tasks = db.list_tasks(&goal.id)?;
-
-    // Unblock tasks that were waiting on this task
-    let completed_task_id = task.id.clone();
     let mut unblocked_task_ids = Vec::new();
 
-    for mut dependent_task in all_tasks.iter().cloned() {
-        if dependent_task.state == TaskState::Blocked
-            && dependent_task.blocked_by.contains(&completed_task_id)
-        {
-            // Check if all blocking tasks are now completed
-            let all_blockers_done = dependent_task.blocked_by.iter().all(|blocker_id| {
-                all_tasks
-                    .iter()
-                    .any(|t| t.id == *blocker_id && t.state == TaskState::Completed)
+    for (dep_id, dep_state, dep_blocked_by) in &tasks_snapshot {
+        if *dep_state == TaskState::Blocked && dep_blocked_by.contains(&task_id) {
+            // Check if all blockers are now completed
+            let all_blockers_done = dep_blocked_by.iter().all(|blocker_id| {
+                db.get_task(blocker_id)
+                    .is_some_and(|t| t.state == TaskState::Completed)
             });
 
             if all_blockers_done {
-                dependent_task.state = TaskState::Pending;
-                dependent_task.updated_at = Timestamp::now();
-                db.update_task(&dependent_task)?;
-                unblocked_task_ids.push(dependent_task.id.clone());
+                let dep_task = db.get_task_mut(dep_id).unwrap();
+                dep_task.unblock();
+                dep_task.write_file(&base)?;
+                unblocked_task_ids.push(dep_id.clone());
             }
         }
     }
 
-    // Refresh task list after unblocking
-    let all_tasks = db.list_tasks(&goal.id)?;
+    // Check goal completion
+    let all_tasks = db.list_tasks(&goal_id);
     let all_completed = all_tasks.iter().all(|t| t.state == TaskState::Completed);
     let any_failed = all_tasks.iter().any(|t| t.state == TaskState::Failed);
 
+    let goal = db
+        .get_goal_mut(&goal_id)
+        .ok_or_else(|| anyhow!("Goal not found: {goal_id}"))?;
+
+    goal.updated_at = Timestamp::now();
     if all_completed {
         goal.state = GoalState::Completed;
         goal.completed_at = Some(Timestamp::now());
     } else if any_failed {
         goal.state = GoalState::Failed;
     }
-
-    db.update_goal(&goal)?;
+    goal.write_file(&base)?;
 
     Ok(CompleteResult {
-        task,
+        task: completed_task,
         unblocked_task_ids,
     })
 }
 
 pub fn fail(task_id: String, db: &mut Database) -> Result<Task> {
-    let task = db.get_task(&task_id)?;
+    let task = db.get_task(&task_id);
 
     if task.is_none() {
         let all_task_ids: Vec<String> = db
-            .list_goals()?
+            .list_goals()
             .iter()
-            .flat_map(|goal| {
-                db.list_tasks(&goal.id)
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|t| t.id)
-            })
+            .flat_map(|goal| db.list_tasks(&goal.id).into_iter().map(|t| t.id.clone()))
             .collect();
 
         return if let Some(suggestion) = find_similar_id(&task_id, &all_task_ids) {
@@ -329,38 +305,29 @@ pub fn fail(task_id: String, db: &mut Database) -> Result<Task> {
         ));
     }
 
-    let updated_at = Timestamp::now().to_string();
-    let transitioned = db.transition_task_state_from_any(
-        &task.id,
-        &[&TaskState::InProgress, &TaskState::Verifying],
-        &TaskState::Failed,
-        &updated_at,
-    )?;
-
-    if !transitioned {
+    let base = db.base_path().to_owned();
+    let task = db.get_task_mut(&task_id).unwrap();
+    if !task.transition_from_any(
+        &[TaskState::InProgress, TaskState::Verifying],
+        TaskState::Failed,
+    ) {
         return Err(anyhow!(
             "Failed to mark task as failed: state may have changed"
         ));
     }
+    task.write_file(&base)?;
 
-    // Re-fetch to get the updated state
-    db.get_task(&task_id)?
-        .ok_or_else(|| anyhow!("Task not found after transition"))
+    Ok(task.clone())
 }
 
 pub fn retry(task_id: String, db: &mut Database) -> Result<Task> {
-    let task = db.get_task(&task_id)?;
+    let task = db.get_task(&task_id);
 
     if task.is_none() {
         let all_task_ids: Vec<String> = db
-            .list_goals()?
+            .list_goals()
             .iter()
-            .flat_map(|goal| {
-                db.list_tasks(&goal.id)
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|t| t.id)
-            })
+            .flat_map(|goal| db.list_tasks(&goal.id).into_iter().map(|t| t.id.clone()))
             .collect();
 
         return if let Some(suggestion) = find_similar_id(&task_id, &all_task_ids) {
@@ -381,31 +348,24 @@ pub fn retry(task_id: String, db: &mut Database) -> Result<Task> {
         ));
     }
 
-    let updated_at = Timestamp::now().to_string();
-    let transitioned = db.retry_task(&task.id, &updated_at)?;
-
-    if !transitioned {
+    let base = db.base_path().to_owned();
+    let task = db.get_task_mut(&task_id).unwrap();
+    if !task.retry() {
         return Err(anyhow!("Failed to retry task: state may have changed"));
     }
+    task.write_file(&base)?;
 
-    // Re-fetch to get updated retry_count
-    db.get_task(&task_id)?
-        .ok_or_else(|| anyhow!("Task not found after retry"))
+    Ok(task.clone())
 }
 
 pub fn comment(task_id: String, text: String, db: &mut Database) -> Result<Task> {
-    let task = db.get_task(&task_id)?;
+    let task = db.get_task(&task_id);
 
     if task.is_none() {
         let all_task_ids: Vec<String> = db
-            .list_goals()?
+            .list_goals()
             .iter()
-            .flat_map(|goal| {
-                db.list_tasks(&goal.id)
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|t| t.id)
-            })
+            .flat_map(|goal| db.list_tasks(&goal.id).into_iter().map(|t| t.id.clone()))
             .collect();
 
         return if let Some(suggestion) = find_similar_id(&task_id, &all_task_ids) {
@@ -417,18 +377,16 @@ pub fn comment(task_id: String, text: String, db: &mut Database) -> Result<Task>
         };
     }
 
-    let mut task = task.unwrap();
-
     let comment = Comment {
         id: generate_id(),
         text,
         created_at: Timestamp::now(),
     };
 
-    task.comments.push(comment);
-    task.updated_at = Timestamp::now();
+    let base = db.base_path().to_owned();
+    let task = db.get_task_mut(&task_id).unwrap();
+    task.add_comment(comment);
+    task.write_file(&base)?;
 
-    db.update_task(&task)?;
-
-    Ok(task)
+    Ok(task.clone())
 }

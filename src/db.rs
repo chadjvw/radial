@@ -5,15 +5,28 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 use fs2::FileExt;
-use jiff::Timestamp;
 
-use crate::models::{Goal, Metrics, Outcome, Task, TaskState};
+use crate::models::{Goal, Metrics, Task, TaskState};
+
+/// Atomically write content to a file using a temporary file + rename.
+pub fn atomic_write(path: &Path, content: &[u8]) -> Result<()> {
+    let temp = path.with_extension("toml.tmp");
+    let mut file = File::create(&temp)
+        .with_context(|| format!("Failed to create temporary file: {}", temp.display()))?;
+    file.lock_exclusive()
+        .context("Failed to acquire file lock")?;
+    file.write_all(content)
+        .context("Failed to write file content")?;
+    file.sync_all().context("Failed to sync file")?;
+    file.unlock().context("Failed to unlock file")?;
+    fs::rename(&temp, path).with_context(|| format!("Failed to rename to {}", path.display()))?;
+    Ok(())
+}
 
 pub struct Database {
     path: PathBuf,
     goals: HashMap<String, Goal>,
     tasks: HashMap<String, Task>,
-    tasks_by_goal: HashMap<String, Vec<String>>,
 }
 
 impl Database {
@@ -29,7 +42,6 @@ impl Database {
             path,
             goals: HashMap::new(),
             tasks: HashMap::new(),
-            tasks_by_goal: HashMap::new(),
         };
 
         db.load()?;
@@ -38,19 +50,15 @@ impl Database {
 
     /// Initialize a new database. The `.radial/` directory must already exist.
     pub fn init_schema(&self) -> Result<()> {
-        // No files to pre-create; the directory is sufficient.
         Ok(())
     }
 
+    /// The base path for the `.radial/` directory.
+    pub fn base_path(&self) -> &Path {
+        &self.path
+    }
+
     /// Load all data from the per-entity TOML files into memory.
-    ///
-    /// Directory layout:
-    /// ```text
-    /// .radial/
-    /// ├── {goal_id}/
-    /// │   ├── goal.toml
-    /// │   └── {task_id}.toml
-    /// ```
     fn load(&mut self) -> Result<()> {
         let dir = fs::read_dir(&self.path).context("Failed to read .radial directory")?;
 
@@ -73,7 +81,7 @@ impl Database {
                 .with_context(|| format!("Failed to parse {}", goal_toml_path.display()))?;
 
             let goal_id = goal.id.clone();
-            self.goals.insert(goal_id.clone(), goal);
+            self.goals.insert(goal_id, goal);
 
             let task_dir = fs::read_dir(&path)
                 .with_context(|| format!("Failed to read goal directory: {}", path.display()))?;
@@ -95,11 +103,6 @@ impl Database {
                 let task: Task = toml::from_str(&task_content)
                     .with_context(|| format!("Failed to parse {}", task_path.display()))?;
 
-                self.tasks_by_goal
-                    .entry(task.goal_id.clone())
-                    .or_default()
-                    .push(task.id.clone());
-
                 self.tasks.insert(task.id.clone(), task);
             }
         }
@@ -107,54 +110,9 @@ impl Database {
         Ok(())
     }
 
-    /// Write a single goal to `.radial/{goal_id}/goal.toml` atomically.
-    fn persist_goal(&self, goal: &Goal) -> Result<()> {
-        let goal_dir = self.path.join(&goal.id);
-        let final_path = goal_dir.join("goal.toml");
-        let temp_path = goal_dir.join("goal.toml.tmp");
-
-        let content = toml::to_string(goal).context("Failed to serialize goal")?;
-
-        let mut file = File::create(&temp_path).context("Failed to create temporary goal file")?;
-
-        file.lock_exclusive()
-            .context("Failed to acquire lock on goal file")?;
-
-        file.write_all(content.as_bytes())
-            .context("Failed to write goal file")?;
-        file.sync_all().context("Failed to sync goal file")?;
-        file.unlock().context("Failed to unlock goal file")?;
-
-        fs::rename(&temp_path, &final_path).context("Failed to rename goal file")?;
-
-        Ok(())
-    }
-
-    /// Write a single task to `.radial/{goal_id}/{task_id}.toml` atomically.
-    fn persist_task(&self, task: &Task) -> Result<()> {
-        let goal_dir = self.path.join(&task.goal_id);
-        let final_path = goal_dir.join(format!("{}.toml", task.id));
-        let temp_path = goal_dir.join(format!("{}.toml.tmp", task.id));
-
-        let content = toml::to_string(task).context("Failed to serialize task")?;
-
-        let mut file = File::create(&temp_path).context("Failed to create temporary task file")?;
-
-        file.lock_exclusive()
-            .context("Failed to acquire lock on task file")?;
-
-        file.write_all(content.as_bytes())
-            .context("Failed to write task file")?;
-        file.sync_all().context("Failed to sync task file")?;
-        file.unlock().context("Failed to unlock task file")?;
-
-        fs::rename(&temp_path, &final_path).context("Failed to rename task file")?;
-
-        Ok(())
-    }
-
     // Goal operations
-    pub fn create_goal(&mut self, goal: &Goal) -> Result<()> {
+
+    pub fn create_goal(&mut self, goal: Goal) -> Result<()> {
         if self.goals.contains_key(&goal.id) {
             bail!("Goal already exists: {}", goal.id);
         }
@@ -162,194 +120,59 @@ impl Database {
         let goal_dir = self.path.join(&goal.id);
         fs::create_dir_all(&goal_dir).context("Failed to create goal directory")?;
 
-        self.goals.insert(goal.id.clone(), goal.clone());
-        self.persist_goal(goal)?;
+        goal.write_file(&self.path)?;
+        self.goals.insert(goal.id.clone(), goal);
 
         Ok(())
     }
 
-    pub fn get_goal(&self, id: &str) -> Result<Option<Goal>> {
-        Ok(self.goals.get(id).cloned())
+    pub fn get_goal(&self, id: &str) -> Option<&Goal> {
+        self.goals.get(id)
     }
 
-    pub fn list_goals(&self) -> Result<Vec<Goal>> {
-        let mut goals: Vec<Goal> = self.goals.values().cloned().collect();
+    pub fn get_goal_mut(&mut self, id: &str) -> Option<&mut Goal> {
+        self.goals.get_mut(id)
+    }
+
+    pub fn list_goals(&self) -> Vec<&Goal> {
+        let mut goals: Vec<&Goal> = self.goals.values().collect();
         goals.sort_by(|a, b| b.created_at.cmp(&a.created_at));
-        Ok(goals)
-    }
-
-    pub fn update_goal(&mut self, goal: &Goal) -> Result<()> {
-        if !self.goals.contains_key(&goal.id) {
-            bail!("Goal not found: {}", goal.id);
-        }
-
-        self.goals.insert(goal.id.clone(), goal.clone());
-        self.persist_goal(goal)?;
-
-        Ok(())
+        goals
     }
 
     // Task operations
 
-    pub fn create_task(&mut self, task: &Task) -> Result<()> {
+    pub fn create_task(&mut self, task: Task) -> Result<()> {
         if self.tasks.contains_key(&task.id) {
             bail!("Task already exists: {}", task.id);
         }
 
-        self.tasks_by_goal
-            .entry(task.goal_id.clone())
-            .or_default()
-            .push(task.id.clone());
-
-        self.tasks.insert(task.id.clone(), task.clone());
-        self.persist_task(task)?;
+        task.write_file(&self.path)?;
+        self.tasks.insert(task.id.clone(), task);
 
         Ok(())
     }
 
-    pub fn get_task(&self, id: &str) -> Result<Option<Task>> {
-        Ok(self.tasks.get(id).cloned())
+    pub fn get_task(&self, id: &str) -> Option<&Task> {
+        self.tasks.get(id)
     }
 
-    pub fn list_tasks(&self, goal_id: &str) -> Result<Vec<Task>> {
-        let task_ids = self.tasks_by_goal.get(goal_id);
-
-        match task_ids {
-            Some(ids) => {
-                let mut tasks: Vec<Task> = ids
-                    .iter()
-                    .filter_map(|id| self.tasks.get(id).cloned())
-                    .collect();
-                tasks.sort_by(|a, b| a.created_at.cmp(&b.created_at));
-                Ok(tasks)
-            }
-            None => Ok(Vec::new()),
-        }
+    pub fn get_task_mut(&mut self, id: &str) -> Option<&mut Task> {
+        self.tasks.get_mut(id)
     }
 
-    pub fn update_task(&mut self, task: &Task) -> Result<()> {
-        if !self.tasks.contains_key(&task.id) {
-            bail!("Task not found: {}", task.id);
-        }
-
-        self.tasks.insert(task.id.clone(), task.clone());
-        self.persist_task(task)?;
-
-        Ok(())
+    pub fn list_tasks(&self, goal_id: &str) -> Vec<&Task> {
+        let mut tasks: Vec<&Task> = self
+            .tasks
+            .values()
+            .filter(|t| t.goal_id == goal_id)
+            .collect();
+        tasks.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+        tasks
     }
 
-    /// Atomically transition a task from one state to another.
-    /// Returns `Ok(true)` if the transition succeeded, `Ok(false)` if the task was not in the expected state.
-    pub fn transition_task_state(
-        &mut self,
-        task_id: &str,
-        from_state: &TaskState,
-        to_state: &TaskState,
-        updated_at: &str,
-    ) -> Result<bool> {
-        let Some(task) = self.tasks.get_mut(task_id) else {
-            return Ok(false);
-        };
-
-        if task.state != *from_state {
-            return Ok(false);
-        }
-
-        task.state = to_state.clone();
-        task.updated_at = updated_at.parse().unwrap_or_else(|_| Timestamp::now());
-
-        let task = task.clone();
-        self.persist_task(&task)?;
-
-        Ok(true)
-    }
-
-    /// Atomically transition a task from one of several states to a new state.
-    /// Returns `Ok(true)` if the transition succeeded, `Ok(false)` if the task was not in any of the expected states.
-    pub fn transition_task_state_from_any(
-        &mut self,
-        task_id: &str,
-        from_states: &[&TaskState],
-        to_state: &TaskState,
-        updated_at: &str,
-    ) -> Result<bool> {
-        let Some(task) = self.tasks.get_mut(task_id) else {
-            return Ok(false);
-        };
-
-        if !from_states.iter().any(|s| task.state == **s) {
-            return Ok(false);
-        }
-
-        task.state = to_state.clone();
-        task.updated_at = updated_at.parse().unwrap_or_else(|_| Timestamp::now());
-
-        let task = task.clone();
-        self.persist_task(&task)?;
-
-        Ok(true)
-    }
-
-    /// Atomically complete a task: transition from `InProgress` to `Completed` with result and metrics.
-    /// Returns `Ok(true)` if the transition succeeded, `Ok(false)` if the task was not in `InProgress` state.
-    #[allow(clippy::too_many_arguments)]
-    pub fn complete_task(
-        &mut self,
-        task_id: &str,
-        result_summary: &str,
-        result_artifacts: Vec<String>,
-        tokens: i64,
-        elapsed_ms: i64,
-        updated_at: &str,
-        completed_at: &str,
-    ) -> Result<bool> {
-        let Some(task) = self.tasks.get_mut(task_id) else {
-            return Ok(false);
-        };
-
-        if task.state != TaskState::InProgress {
-            return Ok(false);
-        }
-
-        task.state = TaskState::Completed;
-        task.result = Some(Outcome {
-            summary: result_summary.to_string(),
-            artifacts: result_artifacts,
-        });
-        task.metrics.tokens = tokens;
-        task.metrics.elapsed_ms = elapsed_ms;
-        task.updated_at = updated_at.parse().unwrap_or_else(|_| Timestamp::now());
-        task.completed_at = Some(completed_at.parse().unwrap_or_else(|_| Timestamp::now()));
-
-        let task = task.clone();
-        self.persist_task(&task)?;
-
-        Ok(true)
-    }
-
-    /// Atomically retry a failed task: transition from `Failed` to `InProgress` and increment `retry_count`.
-    /// Returns `Ok(true)` if the transition succeeded, `Ok(false)` if the task was not in `Failed` state.
-    pub fn retry_task(&mut self, task_id: &str, updated_at: &str) -> Result<bool> {
-        let Some(task) = self.tasks.get_mut(task_id) else {
-            return Ok(false);
-        };
-
-        if task.state != TaskState::Failed {
-            return Ok(false);
-        }
-
-        task.state = TaskState::InProgress;
-        task.metrics.retry_count += 1;
-        task.updated_at = updated_at.parse().unwrap_or_else(|_| Timestamp::now());
-
-        let task = task.clone();
-        self.persist_task(&task)?;
-
-        Ok(true)
-    }
-
-    pub fn compute_goal_metrics(&self, goal_id: &str) -> Result<Metrics> {
-        let tasks = self.list_tasks(goal_id)?;
+    pub fn compute_goal_metrics(&self, goal_id: &str) -> Metrics {
+        let tasks = self.list_tasks(goal_id);
 
         let total_tokens: i64 = tasks.iter().map(|t| t.metrics.tokens).sum();
         let elapsed_ms: i64 = tasks.iter().map(|t| t.metrics.elapsed_ms).sum();
@@ -369,7 +192,7 @@ impl Database {
         )
         .unwrap_or(0);
 
-        Ok(Metrics {
+        Metrics {
             total_tokens,
             prompt_tokens: 0,
             completion_tokens: 0,
@@ -377,6 +200,6 @@ impl Database {
             task_count,
             tasks_completed,
             tasks_failed,
-        })
+        }
     }
 }
