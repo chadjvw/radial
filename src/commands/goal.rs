@@ -18,10 +18,10 @@ pub fn create(description: String, db: &mut Database) -> Result<Goal> {
         metrics: Metrics::default(),
     };
 
-    db.create_goal(&goal)?;
+    db.create_goal(goal.clone())?;
     Ok(goal)
 }
 
-pub fn list(db: &Database) -> Result<Vec<Goal>> {
-    db.list_goals()
+pub fn list(db: &Database) -> Vec<Goal> {
+    db.list_goals().into_iter().cloned().collect()
 }

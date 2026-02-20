@@ -78,7 +78,7 @@ fn run_goal(goal_cmd: GoalCommands, db: &mut Database) -> Result<()> {
             Output::new(json).goal_created(&goal)
         }
         GoalCommands::List { json } => {
-            let goals = commands::goal::list(db)?;
+            let goals = commands::goal::list(db);
             Output::new(json).goal_list(&goals)
         }
     }
@@ -113,8 +113,9 @@ fn run_task(task_cmd: TaskCommands, db: &mut Database) -> Result<()> {
         } => {
             let tasks = commands::task::list(goal_id.clone(), db)?;
             let goal = db
-                .get_goal(&goal_id)?
-                .ok_or_else(|| anyhow!("Goal not found: {goal_id}"))?;
+                .get_goal(&goal_id)
+                .ok_or_else(|| anyhow!("Goal not found: {goal_id}"))?
+                .clone();
             Output::with_verbose(json, verbose).task_list(&tasks, &goal)
         }
         TaskCommands::Start { task_id } => {
@@ -172,8 +173,9 @@ pub fn run(cli: Cli) -> Result<()> {
             let db = ensure_initialized()?;
             let tasks = commands::ready::run(goal_id.clone(), &db)?;
             let goal = db
-                .get_goal(&goal_id)?
-                .ok_or_else(|| anyhow!("Goal not found: {goal_id}"))?;
+                .get_goal(&goal_id)
+                .ok_or_else(|| anyhow!("Goal not found: {goal_id}"))?
+                .clone();
             Output::new(json).ready_tasks(&tasks, &goal)
         }
         Commands::Prep => {

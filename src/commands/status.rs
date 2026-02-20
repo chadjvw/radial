@@ -40,21 +40,23 @@ pub fn run(
         return get_goal(&gid, db).map(StatusResult::Goal);
     }
 
-    get_all_goals(db).map(StatusResult::AllGoals)
+    Ok(StatusResult::AllGoals(get_all_goals(db)))
 }
 
 fn get_task(task_id: &str, db: &Database) -> Result<Task> {
-    db.get_task(task_id)?
+    db.get_task(task_id)
+        .cloned()
         .ok_or_else(|| anyhow!("Task not found: {task_id}"))
 }
 
 fn get_goal(goal_id: &str, db: &Database) -> Result<GoalStatus> {
     let goal = db
-        .get_goal(goal_id)?
-        .ok_or_else(|| anyhow!("Goal not found: {goal_id}"))?;
+        .get_goal(goal_id)
+        .ok_or_else(|| anyhow!("Goal not found: {goal_id}"))?
+        .clone();
 
-    let tasks = db.list_tasks(goal_id)?;
-    let metrics = db.compute_goal_metrics(goal_id)?;
+    let tasks: Vec<Task> = db.list_tasks(goal_id).into_iter().cloned().collect();
+    let metrics = db.compute_goal_metrics(goal_id);
 
     Ok(GoalStatus {
         goal,
@@ -63,17 +65,15 @@ fn get_goal(goal_id: &str, db: &Database) -> Result<GoalStatus> {
     })
 }
 
-fn get_all_goals(db: &Database) -> Result<Vec<GoalSummary>> {
-    let goals = db.list_goals()?;
-
-    goals
+fn get_all_goals(db: &Database) -> Vec<GoalSummary> {
+    db.list_goals()
         .into_iter()
         .map(|goal| {
-            let computed_metrics = db.compute_goal_metrics(&goal.id)?;
-            Ok(GoalSummary {
-                goal,
+            let computed_metrics = db.compute_goal_metrics(&goal.id);
+            GoalSummary {
+                goal: goal.clone(),
                 computed_metrics,
-            })
+            }
         })
         .collect()
 }
