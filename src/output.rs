@@ -423,7 +423,11 @@ fn show_task(task: &Task, json: bool) -> Result<()> {
                 task.comments().len()
             )?;
             for comment in task.comments() {
-                writeln!(w, "  {}", style(format!("[{}]", comment.created_at())).dim())?;
+                writeln!(
+                    w,
+                    "  {}",
+                    style(format!("[{}]", comment.created_at())).dim()
+                )?;
                 for line in comment.text().lines() {
                     writeln!(w, "  {line}")?;
                 }
@@ -626,8 +630,7 @@ fn state_styled(state: &str) -> console::StyledObject<&str> {
     match state {
         "completed" => style(state).green(),
         "in_progress" | "verifying" => style(state).yellow(),
-        "failed" => style(state).red(),
-        "blocked" => style(state).red(),
+        "failed" | "blocked" => style(state).red(),
         "pending" => style(state).dim(),
         _ => style(state).white(),
     }

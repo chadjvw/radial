@@ -193,11 +193,7 @@ pub fn run(cli: Cli) -> Result<()> {
                 }
             }
         }
-        Commands::Status {
-            goal,
-            task,
-            json,
-        } => {
+        Commands::Status { goal, task, json } => {
             let db = ensure_initialized()?;
             let result = commands::status::run(goal, task, &db)?;
             output::status(&result, json)

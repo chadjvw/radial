@@ -35,9 +35,12 @@ pub fn task(
     // Update contract fields, merging with existing values
     if receives.is_some() || produces.is_some() || verify.is_some() {
         let existing = task.contract();
-        let new_receives = receives.unwrap_or_else(|| existing.map_or(String::new(), |c| c.receives().to_string()));
-        let new_produces = produces.unwrap_or_else(|| existing.map_or(String::new(), |c| c.produces().to_string()));
-        let new_verify = verify.unwrap_or_else(|| existing.map_or(String::new(), |c| c.verify().to_string()));
+        let new_receives = receives
+            .unwrap_or_else(|| existing.map_or(String::new(), |c| c.receives().to_string()));
+        let new_produces = produces
+            .unwrap_or_else(|| existing.map_or(String::new(), |c| c.produces().to_string()));
+        let new_verify =
+            verify.unwrap_or_else(|| existing.map_or(String::new(), |c| c.verify().to_string()));
         task.set_contract(Contract::new(new_receives, new_produces, new_verify));
     }
 

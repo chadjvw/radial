@@ -172,9 +172,7 @@ fn test_create_task_and_workflow() {
     assert!(output.contains("pending"));
 
     // Full detail via show
-    let output = env
-        .run(&["show", task_id])
-        .expect("Show task failed");
+    let output = env.run(&["show", task_id]).expect("Show task failed");
     assert!(output.contains("Receives"));
     assert!(output.contains("Nothing"));
     assert!(output.contains("Produces"));
@@ -252,9 +250,7 @@ fn test_task_state_transitions() {
     assert!(output.contains("completed"));
 
     // Full detail via show
-    let output = env
-        .run(&["show", task_id])
-        .expect("Show task failed");
+    let output = env.run(&["show", task_id]).expect("Show task failed");
     assert!(output.contains("Task completed successfully"));
 }
 
@@ -304,9 +300,7 @@ fn test_task_with_artifacts() {
     ])
     .expect("Complete failed");
 
-    let output = env
-        .run(&["show", task_id])
-        .expect("Show task failed");
+    let output = env.run(&["show", task_id]).expect("Show task failed");
     assert!(output.contains("file1.txt"));
     assert!(output.contains("file2.txt"));
     assert!(output.contains("src/main.rs"));
@@ -377,9 +371,7 @@ fn test_blocked_tasks() {
     assert!(output.contains("blocked"));
 
     // Full detail shows blocker
-    let output = env
-        .run(&["show", task_id_2])
-        .expect("Show task failed");
+    let output = env.run(&["show", task_id_2]).expect("Show task failed");
     assert!(output.contains(task_id_1));
 }
 
@@ -429,9 +421,7 @@ fn test_goal_completion() {
     assert!(output.contains("completed"));
 
     // Full detail via show
-    let output = env
-        .run(&["show", goal_id])
-        .expect("Show goal failed");
+    let output = env.run(&["show", goal_id]).expect("Show goal failed");
     assert!(output.contains("1 total, 1 completed, 0 failed"));
 }
 
@@ -864,9 +854,7 @@ fn test_task_comments() {
     assert!(output.contains("Added comment to task"));
 
     // Check that show displays comments
-    let output = env
-        .run(&["show", task_id])
-        .expect("Show failed");
+    let output = env.run(&["show", task_id]).expect("Show failed");
     assert!(output.contains("Comments"));
     assert!(output.contains("First comment on task"));
     assert!(output.contains("Second comment with more detail"));
@@ -908,8 +896,13 @@ fn test_status_compact_vs_show_detail() {
         .unwrap();
 
     // Add a comment
-    env.run(&["task", "comment", task_id, "This comment should only appear in show"])
-        .expect("Add comment failed");
+    env.run(&[
+        "task",
+        "comment",
+        task_id,
+        "This comment should only appear in show",
+    ])
+    .expect("Add comment failed");
 
     // Status should be compact — no comments, no contract detail
     let output = env
@@ -921,9 +914,7 @@ fn test_status_compact_vs_show_detail() {
     assert!(!output.contains("This comment should only appear in show"));
 
     // Show should have full detail including comments
-    let output = env
-        .run(&["show", task_id])
-        .expect("Show failed");
+    let output = env.run(&["show", task_id]).expect("Show failed");
     assert!(output.contains(task_id));
     assert!(output.contains("Task for compact test"));
     assert!(output.contains("Comments"));
