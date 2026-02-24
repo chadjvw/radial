@@ -151,8 +151,9 @@ impl Database {
         // Remove the goal directory from disk
         let goal_dir = self.path.join(goal_id);
         if goal_dir.exists() {
-            fs::remove_dir_all(&goal_dir)
-                .with_context(|| format!("Failed to remove goal directory: {}", goal_dir.display()))?;
+            fs::remove_dir_all(&goal_dir).with_context(|| {
+                format!("Failed to remove goal directory: {}", goal_dir.display())
+            })?;
         }
 
         Ok(())

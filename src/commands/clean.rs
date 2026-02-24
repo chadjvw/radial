@@ -42,10 +42,7 @@ pub fn run(all: bool, force: bool, db: &mut Database) -> Result<()> {
         }
     }
 
-    println!(
-        "\nCleaned {} goal(s).",
-        style(removed).bold()
-    );
+    println!("\nCleaned {} goal(s).", style(removed).bold());
     Ok(())
 }
 

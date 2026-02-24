@@ -29,7 +29,7 @@ pub fn run(db: &Database) -> Result<Vec<GoalWithTasks>> {
     Ok(results)
 }
 
-/// Topological sort of tasks by blocked_by dependencies.
+/// Topological sort of tasks by `blocked_by` dependencies.
 /// Tasks with no blockers come first. Falls back to creation order for ties.
 fn topo_sort(tasks: Vec<&Task>) -> Vec<Task> {
     let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id()).collect();
@@ -49,7 +49,10 @@ fn topo_sort(tasks: Vec<&Task>) -> Vec<Task> {
         // Register this task as a dependent of each blocker
         for blocker in task.blocked_by() {
             if task_ids.contains(blocker.as_str()) {
-                dependents.entry(blocker.as_str()).or_default().push(task.id());
+                dependents
+                    .entry(blocker.as_str())
+                    .or_default()
+                    .push(task.id());
             }
         }
     }
